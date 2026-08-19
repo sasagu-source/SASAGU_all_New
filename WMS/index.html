@@ -1,0 +1,2558 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WMS SASAGU v2 — Warehouse Management System</title>
+
+<!-- JsBarcode: dipakai untuk gambar barcode noOutbond di Label Cetak (lihat renderLabelA6).
+     FIX (barcode kadang tidak muncul): sebelumnya cuma 1 sumber CDN, tanpa
+     fallback & tanpa pemberitahuan kalau gagal load (mis. internet gudang
+     lambat/putus) — jadinya barcode diam-diam kosong tanpa staff sadar.
+     Sekarang dicoba beberapa sumber CDN berurutan (onerror -> coba
+     berikutnya), dan window.__barcodeLibReady dipakai renderLabelA6 untuk
+     menampilkan peringatan jelas di label kalau semuanya gagal. -->
+<script>
+(function(){
+  // FIX (barcode tidak pernah tercetak): 3 URL di bawah ini sebelumnya SALAH
+  // PATH — jsdelivr & unpkg pakai folder "bin/" (harusnya "dist/"), cdnjs
+  // pakai "JsBarcode/" huruf besar (server cdnjs case-sensitive, folder
+  // sebenarnya "jsbarcode/" huruf kecil). Akibatnya ketiga CDN itu SELALU
+  // gagal dimuat (404) dari dulu, sama sekali tidak tergantung internet
+  // gudang cepat/lambat. Sudah dibetulkan ke path yang benar & sudah
+  // diverifikasi tersedia di masing-masing CDN.
+  var sources = [
+    'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.5/JsBarcode.all.min.js',
+    'https://unpkg.com/jsbarcode@3.11.5/dist/JsBarcode.all.min.js'
+  ];
+  function tryLoad(i){
+    if(i >= sources.length){
+      window.__barcodeLibReady = false;
+      console.error('JsBarcode gagal dimuat dari semua sumber CDN — barcode di label tidak akan tergambar sampai koneksi internet pulih.');
+      return;
+    }
+    var s = document.createElement('script');
+    s.src = sources[i];
+    s.onload = function(){ window.__barcodeLibReady = true; };
+    s.onerror = function(){ tryLoad(i+1); };
+    document.head.appendChild(s);
+  }
+  tryLoad(0);
+})();
+</script>
+
+<!-- =====================================================================
+     FIREBASE — project baru "sasagu-allnew"
+     Auth Firebase TIDAK dipakai. Login murni dicek di JavaScript
+     (lihat WMS_ACCOUNTS & wmsDoLogin di bagian bawah <script type="module">).
+     PENTING: Firestore Security Rules HARUS diset mengizinkan read/write
+     tanpa syarat auth Firebase, karena tidak ada request.auth di sini.
+     Contoh rule minimal (development):
+       rules_version = '2';
+       service cloud.firestore {
+         match /databases/{database}/documents {
+           match /{document=**} { allow read, write: if true; }
+         }
+       }
+     (Nanti diperketat lagi kalau semua app sudah jadi & stabil.)
+===================================================================== -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
+  import {
+    getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc,
+    onSnapshot, collection, query, where, orderBy, limit,
+    runTransaction, serverTimestamp, writeBatch
+  } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAspGqQkCyCM7e4zLmo3dl4yGmoeSi_noM",
+    authDomain: "sasagu-allnew.firebaseapp.com",
+    projectId: "sasagu-allnew",
+    storageBucket: "sasagu-allnew.firebasestorage.app",
+    messagingSenderId: "44291875978",
+    appId: "1:44291875978:web:74ee59f8b278e1d8dbf973",
+    measurementId: "G-9H8883ZLZ7"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  /* =====================================================================
+     SKEMA FIRESTORE (kolom = collection, bukan 1 dokumen raksasa lagi)
+     ---------------------------------------------------------------------
+     produk/{docId}         : MILIK POS, read-only di WMS (Tahap 3). Key dokumen BUKAN sku
+                                (POS pakai id internal), jadi WMS selalu mencocokkan produk
+                                lewat field 'sku' di dalam dokumen, bukan lewat doc id.
+                                { id, nama, sku, supplierId, kategori, harga, hargaReseller,
+                                  hargaGrosir, modal, satuan, beratAktual, dimP, dimL, dimT, ... }
+                                WMS memetakan nama field ini ke bentuk lama (hargaEceran,
+                                hargaModal, beratGram, panjangCm/lebarCm/tinggiCm) di
+                                wmsListenProducts supaya kode render/opname di bawah tidak
+                                perlu diubah. WMS TIDAK PERNAH menulis ke collection ini lagi
+                                — tambah/edit produk sepenuhnya lewat aplikasi POS.
+     suppliers/{id}          : MILIK POS, read-only di WMS. Dipakai wmsListenProducts untuk
+                                mengubah p.supplierId (id) jadi nama supplier yang ditampilkan.
+     stock_wms/{sku}        : { sku, nama, stokFisik, stokReserved, updatedAt }
+                              -> stokTersedia dihitung di client = stokFisik - stokReserved
+                              -> collection ini TETAP milik/otoritas WMS (bukan POS)
+     racks/{autoId}         : { zona, nomor, level, kapasitas }
+                              nomor disimpan sebagai string ter-pad 4 digit (mis. "0007")
+                              supaya kode rak (lihat rakCodeOf() di script non-module,
+                              format "ZONA-LEVEL-NNNN") seragam panjangnya & gampang
+                              dipindai staff gudang
+     rack_stock/{autoId}    : { rakCode, sku, nama, qty, batchCode, tglExpired }  -> isi rak per SKU per batch,
+                              dipakai untuk FIFO picking (ambil expired paling awal duluan)
+     inbound_queue/{autoId} : { sku, nama, qty, batchCode, tglExpired, sumber, spbNumber, supplier, status, createdAt }
+                              status: 'pending' | 'processed'
+                              (nanti ditulis otomatis oleh app Produksi — field spbNumber/tglExpired
+                              opsional untuk sumber selain manual, tidak wajib diisi Produksi)
+     counters/spb            : { ym:'YYYYMM', seq:Number } -> generator No. SPB unik & berurutan,
+                              pakai transaction supaya tidak bentrok walau 2 staff input bersamaan
+     outbound_queue/{autoId}: { invoiceNo, items:[{sku,nama,qty}], kasir, tipePacking, status,
+                                createdAt, noOutbond, customerId, ekspedisi, noResi, catatanKirim,
+                                beratGram, packingChecklist, labelBy, labelAt, handoverBy, tglHandover }
+                              noOutbond: nomor internal Sasagu, format ddmmyySSnnnn (12 karakter,
+                                mis. "160826SS0007"): dd/mm/yy tanggal dibuat, SS kode tetap
+                                Sasagu, nnnn urutan 4-digit reset ke 0001 tiap ganti BULAN.
+                                Di-generate ATOMIK oleh POS sendiri saat checkout (lihat
+                                posSyncOutboundToWMS di POS-Rev.html, counter 'counters/outbond')
+                                — BUKAN oleh fungsi posCreateOrderReserveStock di bawah (fungsi
+                                itu cuma dokumentasi kontrak, tidak pernah benar-benar dipanggil
+                                POS). Inilah nilai yang dipakai sebagai barcode di Label
+                                Pengiriman & yang dicocokkan staff gudang saat scan di STEP 4
+                                Handover Kurir (lihat renderPrintLabel & prosesHandoverLookup).
+                              customerId: id dokumen di collection 'customers' milik POS, dikirim
+                                POS tiap checkout (lihat posSyncOutboundToWMS). WMS TIDAK
+                                menyimpan salinan data penerima — selalu resolve realtime lewat
+                                STATE.customers (lihat resolveCustomer()) supaya kalau data
+                                pelanggan dibetulkan di POS setelah invoice dibuat, label ikut
+                                ambil versi terbaru. Kalau kosong/tidak ketemu, label tampil
+                                "Data penerima belum terkirim dari POS".
+                              tipePacking: 'dalam_kota' | 'luar_kota' | 'export' — dipilih
+                                kasir di POS saat checkout (bukan diisi WMS). Dipakai staff
+                                gudang di STEP 3 (Label Resi) untuk menentukan checklist
+                                Standar Packing mana yang ditampilkan (lihat collection
+                                'packing_standards' & fungsi checklistItemsUntukTipe di
+                                script non-module). Order lama tanpa field ini fallback ke
+                                'dalam_kota'.
+                              packingChecklist: array of string, isi Standar Packing (sesuai
+                                tipePacking order ini) yang sudah dicentang staff sebelum
+                                label resi disimpan — untuk audit trail.
+                              status: 'pending' | 'packed' | 'done' | 'batal'
+                              ("picking" masih state sementara di UI WMS, tidak disimpan ke
+                              Firestore). FIX: dulu status langsung lompat 'pending' -> 'done'
+                              begitu picking selesai, jadi outbound berhenti total di situ —
+                              tidak pernah lanjut ke pembuatan label resi ataupun serah terima
+                              ke kurir. Sekarang picking selesai cuma menandai 'packed' (stok
+                              sudah terpotong, barang sudah di tangan staff); 'done' baru
+                              dipakai setelah label resi dibuat DAN handover ke kurir
+                              dikonfirmasi (lihat wmsSimpanLabelResi & wmsKonfirmasiHandover).
+                              App POS/Produksi yang hanya menulis dokumen baru (status awal
+                              selalu 'pending') tidak terpengaruh oleh status baru ini.
+                              (nanti ditulis otomatis oleh app POS lewat
+                              fungsi sejenis posCreateOrderReserveStock di bawah)
+     stock_movements/{autoId}: { sku, nama, qty, type, source, refId, petugas, rakCode, batchCode, createdAt }
+                              type: 'inbound' | 'outbound' | 'adjustment'
+     packing_standards/{tipePacking}: { nama, items:[string, ...], updatedBy, updatedAt }
+                              tipePacking ('dalam_kota'|'luar_kota'|'export') jadi ID
+                              dokumen. Diatur dari halaman Setting WMS (lihat page-setting
+                              & wmsSavePackingStandard). Kalau dokumen untuk suatu
+                              tipePacking belum ada, WMS otomatis mengisi 3 dokumen default
+                              (isi checklist sama seperti checklist lama) sekali saat
+                              pertama kali dibuka — lihat ensurePackingStandardsDefault().
+  ===================================================================== */
+
+  // TAHAP 3 (unifikasi POS-WMS-Produksi): POS sekarang jadi satu-satunya
+  // pemilik data master produk (nama/harga/berat/dimensi). WMS TIDAK LAGI
+  // punya collection 'products' sendiri — WMS hanya membaca (read-only)
+  // collection 'produk' & 'suppliers' milik POS. Lihat wmsListenProducts
+  // di bawah untuk pemetaan nama field POS -> nama field yang dipakai UI WMS.
+  const colProduk      = collection(db, 'produk');
+  const colSuppliers   = collection(db, 'suppliers');
+  // 'customers' juga milik POS (dibuat/dipilih kasir saat checkout, sama
+  // seperti pola index.html: transaksi POS simpan customerId, lalu WMS
+  // cari nama/alamat/telepon-nya lewat collection ini). WMS hanya baca —
+  // TIDAK PERNAH menulis ke collection ini (lihat wmsListenCustomers).
+  const colCustomers   = collection(db, 'customers');
+  const colStock      = collection(db, 'stock_wms');
+  const colRacks       = collection(db, 'racks');
+  const colRackStock   = collection(db, 'rack_stock');
+  const colInbound     = collection(db, 'inbound_queue');
+  const colOutbound    = collection(db, 'outbound_queue');
+  const colMovements   = collection(db, 'stock_movements');
+  // Standar Packing per jenis pengiriman — diatur dari halaman Setting WMS.
+  // Key dokumen = tipePacking ('dalam_kota' | 'luar_kota' | 'export'), isi:
+  // { nama, items: [string, ...] }. Kasir di POS memilih tipePacking saat
+  // checkout (lihat #cart-tipe-packing di POS-Rev.html), tersimpan di field
+  // outbound_queue.tipePacking, lalu dipakai di sini (STEP 3 Label Resi)
+  // untuk menampilkan checklist yang sesuai.
+  const colPackingStandards = collection(db, 'packing_standards');
+  const refCounterSPB  = doc(db, 'counters', 'spb');
+  const refCounterOutbond = doc(db, 'counters', 'outbond');
+
+  /* ---------- Realtime listeners (dipanggil dari app.js di bawah) ---------- */
+  // Dengerin koleksi 'produk' & 'suppliers' milik POS, gabungkan, lalu petakan
+  // nama field POS -> nama field yang dipakai UI WMS (supaya kode render tabel,
+  // opname, dsb di bawah tidak perlu diubah sama sekali):
+  //   POS harga         -> WMS hargaEceran
+  //   POS modal         -> WMS hargaModal
+  //   POS beratAktual   -> WMS beratGram
+  //   POS dimP/dimL/dimT-> WMS panjangCm/lebarCm/tinggiCm
+  //   POS supplierId    -> WMS supplier (dicocokkan ke nama lewat collection suppliers)
+  window.wmsListenProducts = (cb) => {
+    let _produk = [], _suppliers = [], _gotProduk = false, _gotSuppliers = false;
+    function emit(){
+      if(!_gotProduk || !_gotSuppliers) return; // tunggu keduanya siap dulu
+      const supplierMap = {};
+      _suppliers.forEach(s=>{ supplierMap[s.id] = s.nama || ''; });
+      const out = _produk.map(p=>({
+        id: p.id,
+        sku: p.sku || '',
+        nama: p.nama || '',
+        kategori: p.kategori || '',
+        satuan: p.satuan || 'pcs',
+        supplier: supplierMap[p.supplierId] || '',
+        beratGram: Number(p.beratAktual) || 0,
+        panjangCm: Number(p.dimP) || 0,
+        lebarCm: Number(p.dimL) || 0,
+        tinggiCm: Number(p.dimT) || 0,
+        hargaEceran: Number(p.harga) || 0,
+        hargaReseller: Number(p.hargaReseller) || 0,
+        hargaGrosir: Number(p.hargaGrosir) || 0,
+        hargaModal: Number(p.modal) || 0
+      }));
+      cb(out);
+    }
+    onSnapshot(colProduk, snap=>{
+      const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()}));
+      _produk = out; _gotProduk = true; emit();
+    }, err=>console.error('listen produk', err));
+    onSnapshot(colSuppliers, snap=>{
+      const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()}));
+      _suppliers = out; _gotSuppliers = true; emit();
+    }, err=>console.error('listen suppliers', err));
+  };
+
+  // Sama seperti wmsListenProducts di atas: 'customers' dikelola POS,
+  // WMS cuma dengarkan realtime supaya nama/alamat/telepon penerima
+  // selalu versi terbaru begitu diedit/dibuat di POS, tanpa refresh manual.
+  window.wmsListenCustomers = (cb) => onSnapshot(colCustomers, snap=>{
+    const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out);
+  }, err=>console.error('listen customers', err));
+
+  window.wmsListenStock = (cb) => onSnapshot(colStock, snap=>{
+    const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out);
+  }, err=>console.error('listen stock', err));
+
+  window.wmsListenRacks = (cb) => onSnapshot(colRacks, snap=>{
+    const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out);
+  }, err=>console.error('listen racks', err));
+
+  window.wmsListenRackStock = (cb) => onSnapshot(colRackStock, snap=>{
+    const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out);
+  }, err=>console.error('listen rack_stock', err));
+
+  window.wmsListenInbound = (cb) => onSnapshot(
+    query(colInbound, where('status','==','pending')),
+    snap=>{ const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out); },
+    err=>console.error('listen inbound', err)
+  );
+
+  window.wmsListenOutbound = (cb) => onSnapshot(
+    query(colOutbound, where('status','in',['pending','packed'])),
+    snap=>{ const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out); },
+    err=>console.error('listen outbound', err)
+  );
+
+  // FIX (kelanjutan alur outbound): riwayat order yang SUDAH selesai handover
+  // ke kurir, dipakai untuk tabel "Riwayat Handover Hari Ini" di step 4.
+  // Tanpa orderBy di query (supaya tidak butuh composite index baru di
+  // Firestore) — pengurutan & filter "hari ini" dilakukan di client (lihat
+  // renderHandoverHistory di script non-module).
+  window.wmsListenHandoverHistory = (cb) => onSnapshot(
+    query(colOutbound, where('status','==','done')),
+    snap=>{ const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out); },
+    err=>console.error('listen handover history', err)
+  );
+
+  window.wmsListenMovements = (cb) => onSnapshot(
+    query(colMovements, orderBy('createdAt','desc'), limit(150)),
+    snap=>{ const out=[]; snap.forEach(d=>out.push({id:d.id, ...d.data()})); cb(out); },
+    err=>console.error('listen movements', err)
+  );
+
+  window.wmsListenPackingStandards = (cb) => onSnapshot(colPackingStandards, snap=>{
+    const out={}; snap.forEach(d=>{ out[d.id] = { id:d.id, ...d.data() }; }); cb(out);
+  }, err=>console.error('listen packing_standards', err));
+
+  /* ---------- Standar Packing (Setting WMS, fitur BARU) ----------
+     Sebelum fitur ini ada, checklist Standar Packing itu 1 array statis
+     hardcode di kode (PACK_CHECKLIST_ITEMS_DEFAULT di script non-module).
+     Sekarang dipecah per tipePacking (dalam_kota/luar_kota/export), tiap
+     tipe punya daftar item sendiri yang bisa diedit dari halaman Setting.
+     ensurePackingStandardsDefault() memastikan 3 dokumen itu SELALU ada
+     (diisi otomatis dari daftar checklist lama kalau belum pernah dibuat)
+     supaya order lama/baru tidak pernah nemu checklist kosong. */
+  window.wmsEnsurePackingStandardsDefault = async function(defaultItems, labelMap){
+    const tipeList = Object.keys(labelMap);
+    for(const tipe of tipeList){
+      const ref = doc(colPackingStandards, tipe);
+      const snap = await getDoc(ref);
+      if(!snap.exists()){
+        await setDoc(ref, { nama: labelMap[tipe], items: defaultItems.slice(), updatedBy:'system', updatedAt: new Date().toISOString() });
+      }
+    }
+  };
+  window.wmsSavePackingStandard = async function(tipe, nama, items, petugas){
+    const ref = doc(colPackingStandards, tipe);
+    await setDoc(ref, { nama, items: items||[], updatedBy: petugas||'-', updatedAt: new Date().toISOString() }, { merge:true });
+  };
+
+  /* ---------- Produk & Stok ----------
+     TAHAP 3: Tambah/Edit produk (nama, harga, berat, dimensi) DICABUT dari
+     WMS. POS sekarang satu-satunya aplikasi yang boleh menulis data master
+     produk (collection 'produk'). WMS hanya baca lewat wmsListenProducts di
+     atas. Fungsi di bawah ini sengaja dibuat SELALU GAGAL sebagai jaring
+     pengaman kalau ada kode lama yang masih memanggilnya — UI tombolnya
+     sendiri sudah dicabut dari halaman Produk & Stok. */
+  window.wmsAddProduct = async function(){
+    throw new Error('Tambah produk sudah dipindah ke aplikasi POS. Data master produk sekarang dikelola sepenuhnya lewat POS.');
+  };
+
+  window.wmsEditProduct = async function(){
+    throw new Error('Edit produk sudah dipindah ke aplikasi POS. Data master produk sekarang dikelola sepenuhnya lewat POS.');
+  };
+
+  /* ---------- Generator No. SPB (Surat Penerimaan Barang) ----------
+     Pakai transaction atomik di doc counters/spb supaya kalau 2 staff
+     gudang input inbound bersamaan di 2 device, nomor SPB TIDAK PERNAH
+     bentrok (masing-masing transaction dijamin Firestore berjalan serial
+     terhadap doc yang sama). Format: SPB-YYYYMM-001, reset urutan tiap bulan. */
+  window.wmsGenerateSPB = async function(){
+    return await runTransaction(db, async (tx)=>{
+      const snap = await tx.get(refCounterSPB);
+      const now = new Date();
+      const ym = String(now.getFullYear()) + String(now.getMonth()+1).padStart(2,'0');
+      const cur = snap.exists() ? snap.data() : {};
+      const seq = (cur.ym === ym) ? (Number(cur.seq)||0) + 1 : 1;
+      tx.set(refCounterSPB, { ym, seq }, { merge:true });
+      return 'SPB-' + ym + '-' + String(seq).padStart(3,'0');
+    });
+  };
+
+  /* ---------- No. Resi Outbond (internal, BUKAN resi ekspedisi) ----------
+     Nomor unik milik WMS sendiri, dipakai sebagai isi barcode di
+     "Resi Outbond" (dokumen serah-terima internal gudang — beda dari
+     Label Resi ekspedisi yang nomornya dari JNE/J&T/dst). Di-generate
+     langsung di dalam transaction posCreateOrderReserveStock (lihat di
+     bawah) lewat counter atomik 'counters/outbond', pola sama persis
+     dengan wmsGenerateSPB. Format: ddmmyySSnnnn (12 karakter, mis.
+     "160826SS0007") — dd/mm/yy tanggal dibuat, SS kode tetap Sasagu, nnnn
+     urutan 4-digit reset ke 0001 tiap ganti bulan. */
+
+  /* ---------- Ajukan Inbound Manual (multi-item, 1 SPB) ----------
+     Dipakai form "Penerimaan Barang" di halaman Inbound. Menulis banyak
+     dokumen ke inbound_queue sekaligus pakai writeBatch (atomik: semua
+     item masuk atau tidak sama sekali, ID tiap dokumen auto-generate
+     Firestore jadi mustahil bentrok). Tidak mengubah wmsProsesInbound
+     ataupun cara app Produksi menulis ke inbound_queue — ini cuma jalur
+     input tambahan, hasil akhirnya (dokumen di inbound_queue berstatus
+     'pending') identik strukturnya dengan yang ditulis Produksi. */
+  window.wmsAjukanInboundManual = async function(spbNumber, supplier, tanggal, petugas, items){
+    const batch = writeBatch(db);
+    items.forEach(function(it){
+      const ref = doc(colInbound);
+      batch.set(ref, {
+        sku: it.sku, nama: it.nama, qty: Number(it.qty),
+        batchCode: it.batchCode || '-',
+        tglExpired: it.tglExpired || null,
+        sumber: 'manual', spbNumber, supplier: supplier||'', tanggal: tanggal||null,
+        diajukanOleh: petugas,
+        status: 'pending', createdAt: new Date().toISOString()
+      });
+    });
+    await batch.commit();
+  };
+
+  /* ---------- Import Massal Produk dari CSV ----------
+     TAHAP 3: Fitur ini DICABUT dari WMS karena juga menulis data master
+     produk (nama/harga/berat/dimensi), yang sekarang eksklusif milik POS.
+     Kalau butuh input produk banyak sekaligus, gunakan fitur "Import
+     Massal" yang sudah ada di halaman Produk POS. Fungsi ini dibiarkan ada
+     sebagai jaring pengaman (selalu gagal) untuk kode lama yang masih
+     memanggilnya — UI tombol & modalnya sendiri sudah dicabut. */
+  window.wmsImportProdukMassal = async function(){
+    throw new Error('Import massal produk sudah dipindah ke aplikasi POS. Gunakan fitur Import Massal di halaman Produk POS.');
+  };
+
+  // Stock opname / koreksi manual (misal ketemu selisih fisik saat cek gudang)
+  window.wmsStockOpname = async function(sku, nama, stokFisikBaru, alasan, petugas){
+    await runTransaction(db, async (tx)=>{
+      const ref = doc(colStock, sku);
+      const snap = await tx.get(ref);
+      const now = snap.exists() ? snap.data() : { stokFisik:0, stokReserved:0 };
+      const selisih = stokFisikBaru - (now.stokFisik||0);
+      tx.set(ref, { sku, nama, stokFisik: stokFisikBaru, stokReserved: now.stokReserved||0, updatedAt: new Date().toISOString() }, { merge:true });
+      const movRef = doc(colMovements);
+      tx.set(movRef, { sku, nama, qty: selisih, type:'adjustment', source:'manual', refId:null, petugas, rakCode:null, keterangan:alasan, createdAt: new Date().toISOString() });
+    });
+  };
+
+  // FIX: menempatkan stok agregat yang SUDAH tercatat di stock_wms tapi
+  // BELUM punya baris di rack_stock (biasanya stok lama dari sebelum WMS
+  // dipakai, atau hasil Stock Opname yang cuma mengoreksi angka tanpa
+  // memilih rak). Ini TIDAK menambah/mengurangi stock_wms.stokFisik —
+  // hanya menambah baris rack_stock baru, supaya picking FIFO saat
+  // Outbound bisa menemukan lokasi fisiknya. Dicatat juga ke
+  // stock_movements dengan source 'penempatan_manual' supaya tetap
+  // tertelusur di Riwayat.
+  window.wmsTempatkanStokKeRak = async function(sku, nama, rakCode, qty, batchCode, tglExpired, petugas){
+    const q = Number(qty);
+    if(!(q>0)) throw new Error('Jumlah harus lebih dari 0.');
+    if(!rakCode) throw new Error('Rak tujuan wajib dipilih.');
+    await runTransaction(db, async (tx)=>{
+      const rackStockRef = doc(colRackStock);
+      tx.set(rackStockRef, {
+        rakCode, sku, nama, qty: q,
+        batchCode: batchCode || '-',
+        tglExpired: tglExpired || null,
+        createdAt: new Date().toISOString()
+      });
+      const movRef = doc(colMovements);
+      tx.set(movRef, { sku, nama, qty: q, type:'adjustment', source:'penempatan_manual', refId:null, petugas, rakCode, batchCode: batchCode||null, keterangan:'Menempatkan stok lama yang belum berlokasi rak', createdAt: new Date().toISOString() });
+    });
+  };
+
+  /* ---------- Rak ---------- */
+  window.wmsAddRack = async function(zona, nomor, level, kapasitas){
+    await addDoc(colRacks, { zona, nomor, level, kapasitas: Number(kapasitas)||0, createdAt: new Date().toISOString() });
+  };
+  window.wmsDeleteRack = async function(rackDocId){
+    await deleteDoc(doc(colRacks, rackDocId));
+  };
+
+  /* ---------- INBOUND (dari Produksi, atau manual/supplier) ----------
+     KONEKSI NYATA, bukan simulasi: begitu app Produksi sudah punya tombolnya,
+     dia tinggal addDoc ke collection 'inbound_queue' langsung dari Firestore
+     client-nya sendiri, dengan bentuk field yang sama persis (sku, nama, qty,
+     batchCode, sumber:'produksi', status:'pending'). Jembatannya otomatis
+     lewat listener wmsListenInbound di atas — tidak perlu kode tambahan
+     apa pun di WMS. Sampai tombol itu ada, WMS punya menu "Input Penerimaan
+     Barang" (submitInboundManual, lihat wmsAjukanInboundManual di atas)
+     untuk staff gudang input manual ke antrean yang sama. */
+
+  window.wmsProsesInbound = async function(inboundDocId, rakCode, petugas){
+    await runTransaction(db, async (tx)=>{
+      const inRef = doc(colInbound, inboundDocId);
+      const inSnap = await tx.get(inRef);
+      if(!inSnap.exists()) throw new Error('Antrean inbound tidak ditemukan (mungkin sudah diproses perangkat lain).');
+      const data = inSnap.data();
+      if(data.status !== 'pending') throw new Error('Antrean ini sudah diproses.');
+
+      const stockRef = doc(colStock, data.sku);
+      const stockSnap = await tx.get(stockRef);
+      const cur = stockSnap.exists() ? stockSnap.data() : { stokFisik:0, stokReserved:0 };
+
+      tx.set(stockRef, {
+        sku: data.sku, nama: data.nama,
+        stokFisik: (cur.stokFisik||0) + Number(data.qty),
+        stokReserved: cur.stokReserved||0,
+        updatedAt: new Date().toISOString()
+      }, { merge:true });
+
+      const rackStockRef = doc(colRackStock);
+      tx.set(rackStockRef, {
+        rakCode, sku:data.sku, nama:data.nama, qty:Number(data.qty),
+        batchCode: data.batchCode || '-',
+        tglExpired: data.tglExpired || null,
+        createdAt: new Date().toISOString()
+      });
+
+      tx.update(inRef, { status:'processed', processedBy:petugas, rakCode, processedAt: new Date().toISOString() });
+
+      const movRef = doc(colMovements);
+      tx.set(movRef, { sku:data.sku, nama:data.nama, qty:Number(data.qty), type:'inbound', source:data.sumber||'produksi', refId:inboundDocId, petugas, rakCode, batchCode:data.batchCode||null, createdAt: new Date().toISOString() });
+    });
+  };
+
+  /* ---------- OUTBOUND (ke POS) — INI JEMBATAN UTAMA reserved-stock -----
+     ⚠️ KOREKSI PENTING (jangan hapus catatan ini): fungsi posCreateOrderReserveStock
+     di bawah ini SEBELUMNYA didokumentasikan sebagai "kontrak resmi" antara
+     POS & WMS, tapi ternyata app POS yang beneran jalan (POS-Rev.html) TIDAK
+     PERNAH memanggil fungsi ini. Jembatan yang SUNGGUHAN dipakai adalah
+     window.posSyncOutboundToWMS, yang didefinisikan sendiri di dalam
+     POS-Rev.html (bukan di file WMS ini) dan dipanggil dari prosesJual()
+     tiap checkout tunai/kredit. Fungsi itu SEKARANG (setelah fix) juga sudah
+     generate noOutbond & kirim customerId, jadi behaviour-nya disamakan
+     dengan versi di bawah ini — tapi kodenya hidup terpisah di file POS,
+     BUKAN di sini. Fungsi posCreateOrderReserveStock ini dibiarkan tetap
+     ada sebagai referensi/contoh kontrak & buat testing manual dari
+     console, tapi TIDAK ada tombol UI WMS/POS mana pun yang memanggilnya.
+
+     KONEKSI NYATA, bukan simulasi. Fungsi posCreateOrderReserveStock di
+     bawah ini APA ADANYA adalah kontrak resmi antara POS dan WMS: dia
+     langsung menulis ke Firestore (reserve stok + addDoc ke 'outbound_queue')
+     lewat project Firebase yang sama ('sasagu-allnew'). Begitu app POS
+     sudah punya tombol checkout-nya, tinggal salin fungsi ini persis ke
+     app POS (atau import project Firebase yang sama lalu panggil dengan
+     pola argumen yang sama) — tidak ada logika WMS lain yang perlu diubah,
+     karena WMS otomatis melihat dokumen baru lewat wmsListenOutbound.
+     Sampai tombol itu ada di POS, fungsi ini tetap bisa dipanggil manual
+     (mis. dari console) untuk keperluan testing alur WMS.
+
+     FIX (Resi Outbond): kontrak nambah 1 parameter baru, `customerId`.
+     Ini SENGAJA disamakan dengan pola yang sudah dipakai app WMS lama
+     (index.html): di sana order POS (trx) cuma simpan trx.customerId,
+     lalu WMS cari nama/toko/hp/alamat-nya sendiri lewat getCustomer(id)
+     ke collection customers milik POS. Sekarang app ini disamakan persis:
+       - POS TIDAK PERLU kirim seluruh objek Penerima tiap checkout,
+         cukup ID customer yang sudah/baru dipilih kasir di collection
+         'customers' (collection yang sama dipakai POS untuk data
+         pelanggannya — lihat colCustomers & wmsListenCustomers).
+       - WMS dengarkan collection 'customers' realtime (STATE.customers)
+         dan resolve customerId -> objek lengkap {nama, perusahaan/toko,
+         telepon/hp, alamat} tiap kali render Label Resi/Resi Outbond
+         (lihat resolveCustomer() di script non-module) — bukan disalin
+         statis ke dalam dokumen outbound_queue, supaya kalau kasir
+         membetulkan data customer di POS SETELAH invoice dibuat, label
+         yang dicetak WMS ikut ambil versi terbaru.
+     WAJIB dikirim POS setiap checkout — gudang TIDAK PUNYA cara input
+     manual lagi (fitur itu sengaja dicabut supaya data penerima selalu
+     1 sumber kebenaran: collection customers milik POS). Kalau
+     customerId kosong/null, atau ID-nya tidak ketemu di collection
+     customers, order akan tampil dengan tanda "penerima belum terkirim
+     dari POS" dan harus dibetulkan dari sisi POS, bukan dari WMS.
+     (Untuk kompatibilitas mundur, order LAMA yang masih menyimpan field
+     `customer` versi embedded-object tetap terbaca — lihat fallback di
+     resolveCustomer() — tapi jalur BARU/seterusnya selalu pakai
+     customerId seperti di atas.)
+     Fungsi ini juga men-generate `noOutbond` (nomor unik internal WMS,
+     BEDA dari noResi ekspedisi) sekali di sini, atomik lewat counter
+     'counters/outbond', supaya sudah tersedia dari awal untuk barcode
+     Resi Outbond walau label resi ekspedisi belum dibuat. */
+  window.posCreateOrderReserveStock = async function(invoiceNo, items, kasir, customerId){
+    // items = [{sku, nama, qty}, ...]
+    await runTransaction(db, async (tx)=>{
+      // 1. Validasi & kunci semua stok dulu (baca semua sebelum tulis apa pun)
+      const stockRefs = items.map(it => doc(colStock, it.sku));
+      const stockSnaps = [];
+      for(const ref of stockRefs) stockSnaps.push(await tx.get(ref));
+
+      // 1b. Baca counter no. outbond di transaction yang sama (read-before-write)
+      const counterSnap = await tx.get(refCounterOutbond);
+
+      for(let i=0;i<items.length;i++){
+        const it = items[i];
+        const cur = stockSnaps[i].exists() ? stockSnaps[i].data() : { stokFisik:0, stokReserved:0 };
+        const tersedia = (cur.stokFisik||0) - (cur.stokReserved||0);
+        if(tersedia < it.qty){
+          throw new Error(`Stok "${it.nama}" tidak cukup. Tersedia: ${tersedia}, diminta: ${it.qty}`);
+        }
+      }
+
+      // 2. Semua aman -> naikkan stokReserved tiap item
+      for(let i=0;i<items.length;i++){
+        const it = items[i];
+        const cur = stockSnaps[i].exists() ? stockSnaps[i].data() : { stokFisik:0, stokReserved:0 };
+        tx.set(stockRefs[i], {
+          sku: it.sku, nama: it.nama,
+          stokFisik: cur.stokFisik||0,
+          stokReserved: (cur.stokReserved||0) + Number(it.qty),
+          updatedAt: new Date().toISOString()
+        }, { merge:true });
+      }
+
+      // 2b. Generate noOutbond — format ddmmyySSnnnn (12 karakter), counter
+      // bulanan sama pola dengan No. SPB. Format ini HARUS disamakan persis
+      // dengan yang dipakai posSyncOutboundToWMS di POS-Rev.html (jembatan
+      // yang beneran jalan) — lihat catatan di skema outbound_queue di atas.
+      const now = new Date();
+      const ym = String(now.getFullYear()) + String(now.getMonth()+1).padStart(2,'0');
+      const curCounter = counterSnap.exists() ? counterSnap.data() : {};
+      const seq = (curCounter.ym === ym) ? (Number(curCounter.seq)||0) + 1 : 1;
+      const dd = String(now.getDate()).padStart(2,'0');
+      const mm = String(now.getMonth()+1).padStart(2,'0');
+      const yy = String(now.getFullYear()).slice(-2);
+      const noOutbond = dd + mm + yy + 'SS' + String(seq).padStart(4,'0');
+      tx.set(refCounterOutbond, { ym, seq }, { merge:true });
+
+      // 3. Masuk antrean outbound untuk diproses gudang
+      const outRef = doc(colOutbound);
+      tx.set(outRef, {
+        invoiceNo, items, kasir, status:'pending', createdAt: new Date().toISOString(),
+        noOutbond, customerId: customerId || null
+      });
+    });
+  };
+
+  // Staff gudang klik "Proses Outbound" setelah barang fisik diambil & discan
+  window.wmsProsesOutbound = async function(outboundDocId, petugas){
+    await runTransaction(db, async (tx)=>{
+      const outRef = doc(colOutbound, outboundDocId);
+      const outSnap = await tx.get(outRef);
+      if(!outSnap.exists()) throw new Error('Antrean outbound tidak ditemukan.');
+      const data = outSnap.data();
+      if(data.status !== 'pending') throw new Error('Antrean ini sudah diproses/dibatalkan.');
+
+      const stockRefs = data.items.map(it => doc(colStock, it.sku));
+      const stockSnaps = [];
+      for(const ref of stockRefs) stockSnaps.push(await tx.get(ref));
+
+      for(let i=0;i<data.items.length;i++){
+        const it = data.items[i];
+        const cur = stockSnaps[i].exists() ? stockSnaps[i].data() : { stokFisik:0, stokReserved:0 };
+        tx.set(stockRefs[i], {
+          sku: it.sku, nama: it.nama,
+          stokFisik: (cur.stokFisik||0) - Number(it.qty),
+          stokReserved: Math.max(0,(cur.stokReserved||0) - Number(it.qty)),
+          updatedAt: new Date().toISOString()
+        }, { merge:true });
+
+        const movRef = doc(colMovements);
+        tx.set(movRef, { sku:it.sku, nama:it.nama, qty:Number(it.qty), type:'outbound', source:'pos', refId:outboundDocId, petugas, rakCode:null, createdAt: new Date().toISOString() });
+      }
+
+      tx.update(outRef, { status:'done', processedBy:petugas, processedAt: new Date().toISOString() });
+    });
+  };
+
+  // Batal (misal invoice dibatalkan sebelum barang diambil) -> lepas reservasi
+  window.wmsBatalOutbound = async function(outboundDocId, petugas, alasan){
+    await runTransaction(db, async (tx)=>{
+      const outRef = doc(colOutbound, outboundDocId);
+      const outSnap = await tx.get(outRef);
+      if(!outSnap.exists()) throw new Error('Antrean outbound tidak ditemukan.');
+      const data = outSnap.data();
+      if(data.status !== 'pending') throw new Error('Antrean ini sudah diproses/dibatalkan.');
+
+      const stockRefs = data.items.map(it => doc(colStock, it.sku));
+      const stockSnaps = [];
+      for(const ref of stockRefs) stockSnaps.push(await tx.get(ref));
+
+      for(let i=0;i<data.items.length;i++){
+        const it = data.items[i];
+        const cur = stockSnaps[i].exists() ? stockSnaps[i].data() : { stokFisik:0, stokReserved:0 };
+        tx.set(stockRefs[i], {
+          sku: it.sku, nama: it.nama,
+          stokFisik: cur.stokFisik||0,
+          stokReserved: Math.max(0,(cur.stokReserved||0) - Number(it.qty)),
+          updatedAt: new Date().toISOString()
+        }, { merge:true });
+      }
+      tx.update(outRef, { status:'batal', batalBy:petugas, alasanBatal:alasan||'-', processedAt: new Date().toISOString() });
+    });
+  };
+
+  /* ---------- Proses Outbound via Picking FIFO (fungsi BARU, terpisah) ----------
+     wmsProsesOutbound (lama, di atas) TIDAK diubah — masih bisa dipakai sebagai
+     jalur darurat kalau suatu SKU belum tercatat di rack_stock manapun.
+     Fungsi ini dipakai staff gudang setelah menyelesaikan checklist picking
+     (lihat rencanaPickingFIFO di script non-module). `alokasi` = daftar baris
+     hasil picking: [{sku,nama,rackStockId,rakCode,batchCode,qty}, ...].
+     Alur transaksi:
+       1. Baca ulang SEMUA rack_stock yang mau dipakai (fresh, di dalam transaction)
+          -> kalau ternyata qty di rak sudah berubah (misal diambil device lain),
+          transaction gagal dengan pesan jelas, TIDAK ada stok yang kepotong ganda.
+       2. Kurangi qty tiap rack_stock (hapus dokumennya kalau habis).
+       3. Kurangi stokFisik & stokReserved agregat per SKU (persis logika lama).
+       4. Catat stock_movements per baris (ada rakCode & batchCode-nya, jadi
+          riwayat gudang tahu persis barang diambil dari rak & batch mana).
+       5. Tandai outbound_queue jadi 'packed' — BUKAN 'done' lagi. Stok sudah
+          benar-benar terpotong di sini (barang sudah fisik di tangan staff),
+          tapi order masih perlu dibuatkan label resi (wmsSimpanLabelResi)
+          dan diserahterimakan ke kurir (wmsKonfirmasiHandover) sebelum
+          benar-benar dianggap 'done'. Ini yang FIX dari bug sebelumnya:
+          proses outbound berhenti begitu saja setelah picking, tidak pernah
+          lanjut ke pengiriman. */
+  window.wmsProsesOutboundFIFO = async function(outboundDocId, alokasi, petugas){
+    await runTransaction(db, async (tx)=>{
+      const outRef = doc(colOutbound, outboundDocId);
+      const outSnap = await tx.get(outRef);
+      if(!outSnap.exists()) throw new Error('Antrean outbound tidak ditemukan.');
+      const data = outSnap.data();
+      if(data.status !== 'pending') throw new Error('Antrean ini sudah diproses/dibatalkan.');
+
+      // 1. Baca semua rack_stock yang dialokasikan (fresh, sebelum tulis apapun)
+      const rsRefs = alokasi.map(a => doc(colRackStock, a.rackStockId));
+      const rsSnaps = [];
+      for(const ref of rsRefs) rsSnaps.push(await tx.get(ref));
+      for(let i=0;i<alokasi.length;i++){
+        const curQty = rsSnaps[i].exists() ? (rsSnaps[i].data().qty||0) : 0;
+        if(curQty < alokasi[i].qty){
+          throw new Error('Stok di rak '+alokasi[i].rakCode+' untuk "'+alokasi[i].nama+'" sudah berubah (sisa '+curQty+', butuh '+alokasi[i].qty+'). Buka ulang halaman picking untuk hitung ulang.');
+        }
+      }
+
+      // 2. Baca stok agregat per SKU unik yang ada di order
+      const skuUnik = Array.from(new Set(data.items.map(it=>it.sku)));
+      const stockRefs = skuUnik.map(sku => doc(colStock, sku));
+      const stockSnaps = [];
+      for(const ref of stockRefs) stockSnaps.push(await tx.get(ref));
+
+      // 3. Kurangi/hapus tiap baris rack_stock + catat movement per baris
+      for(let i=0;i<alokasi.length;i++){
+        const a = alokasi[i];
+        const sisaQty = (rsSnaps[i].data().qty||0) - a.qty;
+        if(sisaQty<=0){ tx.delete(rsRefs[i]); }
+        else { tx.update(rsRefs[i], { qty: sisaQty }); }
+
+        const movRef = doc(colMovements);
+        tx.set(movRef, { sku:a.sku, nama:a.nama, qty:a.qty, type:'outbound', source:'pos-fifo', refId:outboundDocId, petugas, rakCode:a.rakCode, batchCode:a.batchCode||null, createdAt: new Date().toISOString() });
+      }
+
+      // 4. Kurangi stokFisik & stokReserved agregat per SKU (jumlah semua alokasi SKU tsb)
+      skuUnik.forEach(function(sku, i){
+        const it = data.items.find(function(x){ return x.sku===sku; });
+        const totalQtySku = alokasi.filter(function(a){ return a.sku===sku; }).reduce(function(s,a){ return s+a.qty; }, 0);
+        const cur = stockSnaps[i].exists() ? stockSnaps[i].data() : { stokFisik:0, stokReserved:0 };
+        tx.set(stockRefs[i], {
+          sku, nama: it ? it.nama : sku,
+          stokFisik: (cur.stokFisik||0) - totalQtySku,
+          stokReserved: Math.max(0,(cur.stokReserved||0) - Number(it ? it.qty : totalQtySku)),
+          updatedAt: new Date().toISOString()
+        }, { merge:true });
+      });
+
+      tx.update(outRef, { status:'packed', processedBy:petugas, processedAt: new Date().toISOString(), pickingMethod:'fifo' });
+    });
+  };
+
+  /* ---------- Buat Label Resi (Outbound STEP 3, fitur BARU) ----------
+     Dipanggil setelah picking selesai (status 'packed'). Cuma nulis data
+     administratif pengiriman (ekspedisi, no. resi, berat, catatan) ke
+     dokumen outbound_queue yang sudah ada — TIDAK menyentuh stok lagi,
+     karena stok sudah dipotong tuntas di wmsProsesOutboundFIFO. Status
+     TETAP 'packed' sampai handover dikonfirmasi (STEP 4). */
+  window.wmsSimpanLabelResi = async function(outboundDocId, data, petugas){
+    const outRef = doc(colOutbound, outboundDocId);
+    const outSnap = await getDoc(outRef);
+    if(!outSnap.exists()) throw new Error('Antrean outbound tidak ditemukan.');
+    if(outSnap.data().status !== 'packed') throw new Error('Order ini belum selesai picking, belum bisa dibuatkan label resi.');
+    // No. Resi (nomor tracking dari ekspedisi) SENGAJA opsional — beda dari
+    // No. Outbond (noOutbond) yang sudah auto-generate sistem sejak picking
+    // selesai. Kadang resi ekspedisi baru didapat staff saat kurir datang
+    // ambil paket, jadi tidak boleh menghalangi label resi/checklist disimpan.
+    await updateDoc(outRef, {
+      ekspedisi: data.ekspedisi || '',
+      noResi: data.noResi || '',
+      catatanKirim: data.catatan || '',
+      beratGram: Number(data.beratGram) || 0,
+      // Standar Packing: checklist sederhana (centang saja) yang sudah
+      // dipenuhi staff sebelum label resi disimpan — untuk audit trail.
+      // Kalau nanti checklist dikembangkan lebih detail, tinggal tambah
+      // field di sini tanpa mengubah struktur yang sudah ada.
+      packingChecklist: data.packingChecklist || [],
+      labelBy: petugas,
+      labelAt: new Date().toISOString()
+    });
+  };
+
+  /* ---------- Konfirmasi Handover ke Kurir (Outbound STEP 4, fitur BARU) ----
+     Langkah TERAKHIR alur outbound — baru di sinilah status jadi 'done'.
+     Transaction dipakai supaya 2 staff yang scan resi sama nyaris bersamaan
+     tidak bisa dobel-konfirmasi handover yang sama. */
+  window.wmsKonfirmasiHandover = async function(outboundDocId, petugas){
+    await runTransaction(db, async (tx)=>{
+      const outRef = doc(colOutbound, outboundDocId);
+      const outSnap = await tx.get(outRef);
+      if(!outSnap.exists()) throw new Error('Antrean outbound tidak ditemukan.');
+      const data = outSnap.data();
+      if(data.status === 'done') throw new Error('Order ini sudah pernah di-handover sebelumnya.');
+      if(data.status !== 'packed') throw new Error('Order ini belum siap handover (status saat ini: '+data.status+').');
+      if(!data.labelAt) throw new Error('Order ini belum dibuatkan label resi.');
+      tx.update(outRef, { status:'done', handoverBy:petugas, tglHandover: new Date().toISOString() });
+    });
+  };
+
+  // ── FIX: sinyal "modul Firebase sudah siap" ──
+  // Ditambahkan supaya kode auto-login di <script> biasa (bagian bawah file)
+  // TIDAK memanggil window.wmsListenProducts/wmsListenStock/dst SEBELUM
+  // fungsi-fungsi itu selesai didefinisikan di sini. <script type="module">
+  // selalu dijalankan browser SETELAH seluruh HTML selesai di-parse, padahal
+  // <script> biasa (termasuk auto-login) dijalankan LANGSUNG saat parser
+  // sampai di situ — jadi tanpa sinyal ini, auto-login bisa lebih dulu
+  // jalan daripada modul ini selesai, dan pemasangan listener gagal diam-
+  // diam (WMS jadi "tidak mendengar" perubahan dari POS/Produksi). Baris
+  // ini TIDAK mengubah fungsi apa pun di atas, hanya menambahkan penanda.
+  window._wmsFirebaseReady = true;
+  window.dispatchEvent(new Event('wmsFirebaseReady'));
+</script>
+
+<style>
+/* ========== RESET & BASE (tema dipertahankan sama seperti WMS lama) ========== */
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0F1117;color:#E8E6E0;font-size:14px;min-height:100vh}
+
+nav{background:#0A0C10;display:flex;gap:6px;padding:10px 20px;position:sticky;top:0;z-index:200;align-items:center;border-bottom:1px solid #1E2230;flex-wrap:wrap}
+nav .brand{color:#fff;font-size:15px;font-weight:700;margin-right:16px;letter-spacing:-.01em;white-space:nowrap;display:flex;align-items:center;gap:8px}
+nav .brand .dot{width:8px;height:8px;background:#00E59B;border-radius:50%;animation:pulse-dot 2s infinite}
+@keyframes pulse-dot{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(1.3)}}
+nav .brand span{color:#00E59B}
+nav button{padding:6px 14px;border:1px solid #2A2F3E;border-radius:8px;background:transparent;cursor:pointer;font-size:13px;color:rgba(255,255,255,.55);transition:all .15s}
+nav button:hover{background:#1E2230;color:#fff}
+nav button.active{background:#00E59B;color:#0A0C10;border-color:#00E59B;font-weight:600}
+.sync-badge{display:flex;align-items:center;gap:5px;font-size:11px;color:#00E59B;margin-left:auto;padding:4px 10px;background:rgba(0,229,155,.1);border:1px solid rgba(0,229,155,.2);border-radius:20px;white-space:nowrap}
+.sync-badge .sync-dot{width:6px;height:6px;background:#00E59B;border-radius:50%;animation:pulse-dot 1.5s infinite}
+
+.page{display:none;padding:20px;max-width:1200px;margin:0 auto}
+.page.active{display:block}
+
+.card{background:#141720;border:1px solid #1E2230;border-radius:16px;padding:20px 24px;margin-bottom:16px}
+.card h2{font-size:14px;font-weight:600;margin-bottom:16px;color:#E8E6E0;letter-spacing:.01em}
+.card-title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px}
+.card-title-row h2{margin-bottom:0}
+.hint-txt{font-size:12px;color:#6B7280;margin-top:-8px;margin-bottom:14px;line-height:1.5}
+
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.metric{background:#141720;border:1px solid #1E2230;border-radius:14px;padding:18px;position:relative;overflow:hidden}
+.metric::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--accent,#00E59B)}
+.metric.red::before{background:#FF5252}
+.metric.amber::before{background:#FFB547}
+.metric.blue::before{background:#4B8EF5}
+.metric.purple::before{background:#B47EFF}
+.metric .label{font-size:11px;color:#6B7280;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
+.metric .value{font-size:24px;font-weight:700;color:#E8E6E0}
+.metric .sub{font-size:11px;color:#6B7280;margin-top:4px}
+
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.form-row.three{grid-template-columns:1fr 1fr 1fr}
+.form-row.four{grid-template-columns:1fr 1fr 1fr 1fr}
+.form-row.single{grid-template-columns:1fr}
+.fld{display:flex;flex-direction:column;gap:5px}
+label{font-size:12px;color:#9CA3AF;font-weight:500}
+input,select,textarea{width:100%;padding:9px 12px;border:1px solid #2A2F3E;border-radius:9px;font-size:14px;background:#1A1F2E;color:#E8E6E0;outline:none;transition:border-color .15s;font-family:inherit}
+input:focus,select:focus,textarea:focus{border-color:#00E59B;box-shadow:0 0 0 3px rgba(0,229,155,.08)}
+input::placeholder{color:#4B5563}
+select option{background:#1A1F2E}
+textarea{resize:vertical;min-height:60px}
+
+.btn{padding:8px 16px;border-radius:9px;border:1px solid #2A2F3E;background:#1A1F2E;cursor:pointer;font-size:13px;font-weight:500;transition:all .15s;color:#E8E6E0}
+.btn:hover{background:#222839;border-color:#3A4050}
+.btn.primary{background:#00E59B;color:#0A0C10;border-color:#00E59B;font-weight:600}
+.btn.primary:hover{background:#00CCB3}
+.btn.danger{border-color:#FF5252;color:#FF5252}
+.btn.danger:hover{background:rgba(255,82,82,.1)}
+.btn.amber{background:#FFB547;color:#0A0C10;border-color:#FFB547;font-weight:600}
+.btn.amber:hover{background:#F9A825}
+.btn.blue{background:#4B8EF5;color:#fff;border-color:#4B8EF5}
+.btn.blue:hover{background:#3B7DE0}
+.btn.sm{padding:4px 10px;font-size:12px;border-radius:7px}
+.btn-row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:9px 12px;border-bottom:1px solid #1E2230;color:#6B7280;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:#0F1117}
+td{padding:10px 12px;border-bottom:1px solid #1A1F2E;vertical-align:middle;color:#C9C7C1}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#141720}
+
+.badge{display:inline-block;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:600;white-space:nowrap}
+.badge.green{background:rgba(0,229,155,.12);color:#00E59B;border:1px solid rgba(0,229,155,.2)}
+.badge.red{background:rgba(255,82,82,.12);color:#FF5252;border:1px solid rgba(255,82,82,.2)}
+.badge.amber{background:rgba(255,181,71,.12);color:#FFB547;border:1px solid rgba(255,181,71,.2)}
+.badge.blue{background:rgba(75,142,245,.12);color:#4B8EF5;border:1px solid rgba(75,142,245,.2)}
+.badge.gray{background:rgba(107,114,128,.12);color:#9CA3AF;border:1px solid rgba(107,114,128,.2)}
+
+#toast{position:fixed;bottom:24px;right:24px;background:#00E59B;color:#0A0C10;padding:11px 20px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;transition:opacity .3s;pointer-events:none;z-index:9999;box-shadow:0 4px 20px rgba(0,229,155,.3)}
+#toast.show{opacity:1}
+#toast.err{background:#FF5252;color:#fff;box-shadow:0 4px 20px rgba(255,82,82,.3)}
+
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:500;padding:16px;backdrop-filter:blur(4px)}
+.modal{background:#141720;border:1px solid #2A2F3E;border-radius:20px;padding:28px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,.6)}
+.modal.sm{max-width:420px}
+.modal.md{max-width:600px}
+.modal.lg{max-width:780px}
+.modal h3{font-size:17px;font-weight:700;margin-bottom:20px;color:#E8E6E0}
+.modal-footer{display:flex;gap:8px;margin-top:20px;justify-content:flex-end;flex-wrap:wrap}
+
+.rak-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+.rak-cell{background:#1A1F2E;border:1px solid #2A2F3E;border-radius:10px;padding:10px;text-align:center;position:relative}
+.rak-cell .rak-code{font-family:monospace;font-weight:700;font-size:13px;color:#E8E6E0;letter-spacing:.02em}
+.rak-cell .rak-code .rak-num{color:#00E59B;font-size:16px}
+.pack-row{background:#1A1F2E;border:1px solid #2A2F3E;border-radius:12px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px}
+.pack-row.checked{border-color:#00E59B;background:rgba(0,229,155,.05)}
+.pack-row input[type="checkbox"]{width:22px;height:22px;flex-shrink:0;cursor:pointer;accent-color:#00E59B}
+.pack-row .pk-label{font-size:13px;color:#E8E6E0}
+.rak-cell .rak-info{font-size:10px;color:#6B7280;margin-top:3px;line-height:1.4}
+.rak-cell .rak-del{position:absolute;top:4px;right:6px;cursor:pointer;color:#FF5252;font-size:11px}
+
+.queue-item{background:#1A1F2E;border:1px solid #2A2F3E;border-radius:12px;padding:14px;margin-bottom:10px}
+.penerima-card{background:#1A1F2E;border:1px solid #2A2F3E;border-radius:12px;padding:12px 14px}
+.penerima-card .pc-name{font-size:14px;font-weight:700;color:#E8E6E0}
+.penerima-card .pc-row{font-size:12px;color:#9CA3AF;margin-top:2px}
+.penerima-card.warn{border-color:#B45309;background:rgba(180,83,9,.1)}
+.penerima-card.warn .pc-name{color:#FFB547}
+.queue-item .qi-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
+.queue-item .qi-title{font-weight:700;color:#E8E6E0;font-size:14px}
+.queue-item .qi-meta{font-size:11px;color:#6B7280}
+.queue-item .qi-items{background:#0F1117;border-radius:10px;padding:8px 12px;font-size:12px;color:#C9C7C1;margin:8px 0}
+.queue-item .qi-items div{padding:3px 0;border-bottom:1px solid #1E2230;display:flex;justify-content:space-between}
+.queue-item .qi-items div:last-child{border-bottom:none}
+
+.section-title{font-size:11px;font-weight:600;color:#4B5563;margin-bottom:10px;text-transform:uppercase;letter-spacing:.07em;margin-top:16px;padding-top:16px;border-top:1px solid #1E2230}
+.section-title:first-child{margin-top:0;padding-top:0;border-top:none}
+
+.stok-bar-wrap{background:#0F1117;border-radius:6px;height:6px;overflow:hidden;margin-top:4px;width:100px}
+.stok-bar{height:100%;background:linear-gradient(90deg,#00E59B,#00CCB3)}
+.stok-bar.reserved{background:linear-gradient(90deg,#FFB547,#F9A825)}
+
+@media(max-width:700px){
+  .form-row{grid-template-columns:1fr}
+  .form-row.three,.form-row.four{grid-template-columns:1fr 1fr}
+}
+
+/* ========== STEP INDICATOR (Outbound Picking) ========== */
+.steps{display:flex;align-items:center;justify-content:center;margin-bottom:20px;padding:16px;background:#141720;border:1px solid #1E2230;border-radius:16px;flex-wrap:wrap;gap:4px}
+.step{display:flex;flex-direction:column;align-items:center;gap:6px;opacity:.45}
+.step.active{opacity:1}
+.step-circle{width:30px;height:30px;border-radius:50%;background:#1A1F2E;border:2px solid #2A2F3E;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#9CA3AF}
+.step-circle.active{background:#00E59B;border-color:#00E59B;color:#0A0C10}
+.step-label{font-size:11px;color:#9CA3AF;white-space:nowrap}
+.step.active .step-label{color:#E8E6E0;font-weight:600}
+.step-line{width:40px;height:2px;background:#2A2F3E;margin:0 4px 18px}
+
+/* ========== PROGRESS BAR (Picking) ========== */
+.progress-bar-wrap{background:#0F1117;border-radius:8px;height:10px;overflow:hidden;border:1px solid #1E2230}
+.progress-bar{height:100%;background:linear-gradient(90deg,#00E59B,#00CCB3);transition:width .25s}
+
+/* ========== FIFO WARNING BOX ========== */
+.fifo-box{background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25);border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.fifo-title{font-size:12px;font-weight:700;color:#FFB547;margin-bottom:4px}
+
+/* ========== PICK LIST ROWS ========== */
+.pick-row{background:#1A1F2E;border:1px solid #2A2F3E;border-radius:12px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px}
+.pick-row.checked{border-color:#00E59B;background:rgba(0,229,155,.05)}
+.pick-row .pr-check{width:22px;height:22px;flex-shrink:0;cursor:pointer;accent-color:#00E59B}
+.pick-row .pr-info{flex:1;min-width:0}
+.pick-row .pr-title{font-weight:700;color:#E8E6E0;font-size:13px}
+.pick-row .pr-meta{font-size:11px;color:#9CA3AF;margin-top:2px}
+.pick-row .pr-qty{font-family:monospace;font-weight:700;font-size:16px;color:#00E59B;white-space:nowrap}
+
+/* ========== AUTOCOMPLETE PRODUK (ketik nama / SKU) ========== */
+.ac-wrap{position:relative}
+.ac-list{position:absolute;top:100%;left:0;right:0;background:#1A1F2E;border:1px solid #2A2F3E;border-radius:10px;margin-top:4px;max-height:220px;overflow-y:auto;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.ac-item{padding:9px 12px;cursor:pointer;font-size:13px;color:#E8E6E0;border-bottom:1px solid #1E2230}
+.ac-item:last-child{border-bottom:none}
+.ac-item:hover,.ac-item.hi{background:#242A3A}
+.ac-item .ac-sku{font-family:monospace;font-size:11px;color:#6B7280}
+.scan-box{display:flex;align-items:center;gap:10px;background:#1A1F2E;border:1px solid #2A2F3E;border-radius:12px;padding:10px 14px}
+.scan-box .scan-icon{font-size:18px}
+.scan-box input{border:none;background:transparent;padding:4px;font-size:14px}
+.scan-box input:focus{box-shadow:none}
+
+/* ========== AUTH OVERLAY ========== */
+#auth-overlay{position:fixed;inset:0;background:#0A0C10;display:flex;align-items:center;justify-content:center;z-index:99999;padding:16px}
+#auth-overlay.hidden{display:none}
+.auth-box{background:#151926;border:1px solid #2A2F3E;border-radius:16px;padding:32px 28px;width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.auth-box h1{font-size:18px;font-weight:700;margin-bottom:4px;color:#fff}
+.auth-box h1 span{color:#00E59B}
+.auth-box .sub{font-size:12px;color:#9CA3AF;margin-bottom:22px}
+.auth-box .fld{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.auth-box label{font-size:12px;color:#9CA3AF;font-weight:500}
+.auth-box input{width:100%;padding:10px 12px;border:1px solid #2A2F3E;border-radius:8px;font-size:14px;outline:none;background:#0F1117;color:#E8E6E0}
+.auth-box input:focus{border-color:#00E59B;box-shadow:0 0 0 2px rgba(0,229,155,.15)}
+.auth-box .err{color:#F87171;font-size:12px;margin-bottom:10px;min-height:14px}
+.auth-box button{width:100%;padding:10px;border:0;border-radius:8px;background:#00E59B;color:#0A0C10;font-size:14px;font-weight:700;cursor:pointer;margin-top:4px}
+.auth-box button:hover{background:#00C988}
+.auth-box .hint{margin-top:16px;font-size:11px;color:#6B7280;line-height:1.6;border-top:1px solid #2A2F3E;padding-top:12px}
+#user-chip{display:flex;align-items:center;gap:8px;margin-left:auto;color:#E8E6E0;font-size:12px}
+#user-chip .role-badge{background:#00E59B;color:#0A0C10;padding:3px 9px;border-radius:6px;font-size:11px;font-weight:700}
+#user-chip button{padding:5px 11px;border-radius:8px;border:1px solid #2A2F3E;background:transparent;color:#E8E6E0;cursor:pointer;font-size:12px}
+#user-chip button:hover{background:#1E2230}
+
+/* ---------- LABEL CETAK — 1 desain standar, 1 halaman A6 ----------
+   FIX (revisi diminta user): sebelumnya ada 2 dokumen cetak terpisah
+   (Label Pengiriman & Resi Outbond) dengan desain beda-beda dan tidak
+   dipatok ke ukuran kertas apapun. Sekarang DIGABUNG jadi SATU template
+   (renderLabelA6, lihat script non-module di bawah) yang dipakai oleh
+   tombol "Label", tombol "Resi", MAUPUN auto-print setelah simpan label
+   resi — supaya hasil cetak selalu konsisten: 1 halaman, ukuran A6
+   (105mm x 148mm, ukuran umum printer label/thermal A6 di gudang).
+
+   FIX (barcode tidak muncul): dulu container #print-label-area dipakai
+   `display:none` saat tidak dicetak. Masalahnya JsBarcode menggambar SVG
+   SEBELUM window.print() dipanggil, dan `display:none` bikin elemen tidak
+   punya layout sama sekali — JsBarcode butuh layout untuk menggambar
+   batang & angka barcode, jadi gagal diam-diam (di-catch, tanpa error
+   terlihat) dan SVG tetap kosong. Sekarang dipakai teknik "taruh di luar
+   layar" (posisi fixed jauh di kiri, tetap px agar tidak kena rounding mm)
+   yang TETAP punya layout normal, jadi JsBarcode selalu berhasil
+   menggambar — tapi tetap tidak kelihatan di layar biasa. Saat @media
+   print, posisinya dikembalikan ke normal & dibatasi persis ukuran A6
+   (lihat @page & override di bawah), supaya benar-benar cuma 1 halaman. */
+.print-only{position:fixed;left:-9999px;top:0;width:397px}
+#print-label-area .lbl-a6{width:397px;min-height:562px;border:1.5px solid #000;padding:10px 12px;font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;box-sizing:border-box;display:flex;flex-direction:column;gap:6px}
+#print-label-area .lbl-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #000;padding-bottom:6px}
+#print-label-area .lbl-brand{font-size:14px;font-weight:800;letter-spacing:.03em}
+#print-label-area .lbl-brand small{display:block;font-size:8px;font-weight:600;letter-spacing:.06em;color:#444;margin-top:2px}
+#print-label-area .lbl-ekspedisi{font-size:13px;font-weight:800;text-transform:uppercase;text-align:right}
+#print-label-area .lbl-barcode-wrap{text-align:center;padding:6px 0;border-bottom:1px dashed #000}
+#print-label-area .lbl-barcode-wrap svg{max-width:100%;height:auto}
+#print-label-area .lbl-barcode-fallback{font-size:10px;font-weight:800;color:#B00020;border:1.5px dashed #B00020;padding:8px 4px}
+#print-label-area .lbl-noOutbond{font-family:monospace;font-size:11px;font-weight:700;letter-spacing:.03em;margin-top:2px}
+#print-label-area .lbl-meta{display:flex;justify-content:space-between;font-size:9px;color:#333}
+#print-label-area .lbl-parties{display:grid;grid-template-columns:1fr 1fr;gap:8px;border-top:1px dashed #000;border-bottom:1px dashed #000;padding:6px 0}
+#print-label-area .lbl-party-label{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#555;margin-bottom:2px}
+#print-label-area .lbl-party-name{font-size:11.5px;font-weight:700;line-height:1.25}
+#print-label-area .lbl-party-row{font-size:9.5px;color:#333;margin-top:1px;line-height:1.3}
+#print-label-area .lbl-info{display:flex;border-bottom:1px dashed #000;font-size:9.5px}
+#print-label-area .lbl-info-col{flex:1;padding:4px 0}
+#print-label-area .lbl-info-col:first-child{border-right:1px dashed #000;padding-right:6px}
+#print-label-area .lbl-info-col:last-child{padding-left:6px}
+#print-label-area .lbl-info-row{display:flex;justify-content:space-between;padding:1px 0}
+#print-label-area .lbl-info-row span:first-child{color:#333}
+#print-label-area .lbl-info-row span:last-child{font-weight:700;text-align:right}
+#print-label-area .lbl-catatan{font-size:9.5px;border-bottom:1px dashed #000;padding-bottom:5px}
+#print-label-area .lbl-items{font-size:9.5px;flex:1;overflow:hidden}
+#print-label-area .lbl-items-label{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
+#print-label-area .lbl-items div{display:flex;justify-content:space-between;padding:1px 0}
+#print-label-area .lbl-foot{font-size:8px;color:#555;text-align:center;border-top:1px dashed #000;padding-top:4px}
+@page{ size:105mm 148mm; margin:0; }
+@media print{
+  body *{ visibility:hidden !important; }
+  #print-label-area, #print-label-area *{ visibility:visible !important; }
+  #print-label-area{ display:block !important; position:absolute; left:0; top:0; width:105mm; height:148mm; padding:0; }
+  #print-label-area .lbl-a6{ width:105mm; height:148mm; min-height:0; }
+}
+
+</style>
+</head>
+<body>
+
+<!-- ===== AUTH OVERLAY — login murni password JS, TANPA Firebase Auth ===== -->
+<div id="auth-overlay">
+  <div class="auth-box">
+    <h1><span class="dot" style="display:inline-block;width:8px;height:8px;background:#00E59B;border-radius:50%;margin-right:4px"></span> WMS <span>SASAGU</span></h1>
+    <div class="sub">Masuk untuk melanjutkan</div>
+    <div class="fld"><label>Username</label><input id="auth-user" type="text" placeholder="Username" autocomplete="username"></div>
+    <div class="fld"><label>Password</label><input id="auth-pass" type="password" placeholder="Password" autocomplete="current-password"></div>
+    <div class="err" id="auth-err"></div>
+    <button onclick="wmsDoLogin()">Masuk</button>
+    <div class="hint">Demo akun — ganti langsung di kode (WMS_ACCOUNTS):<br>
+      Kepala Gudang: <code>0</code> / <code>0</code><br>
+      Staff Gudang: <code>staff1</code> / <code>staff123</code>
+    </div>
+  </div>
+</div>
+
+<nav>
+  <span class="brand"><span class="dot"></span> WMS <span>SASAGU</span></span>
+  <span id="user-chip"></span>
+  <button class="active" onclick="gotoPage('dashboard',this)">📊 Dashboard</button>
+  <button onclick="gotoPage('outbound',this)">📦 Outbound<span id="badge-outbound" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
+  <button onclick="gotoPage('inbound',this)">📥 Inbound<span id="badge-inbound" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
+  <button onclick="gotoPage('rak',this)">🗄️ Peta Rak</button>
+  <button onclick="gotoPage('stok',this)">📋 Produk &amp; Stok</button>
+  <button onclick="gotoPage('riwayat',this)">🔍 Riwayat</button>
+  <button id="nav-user" onclick="gotoPage('user',this)" style="display:none">👤 User</button>
+  <button id="nav-setting" onclick="gotoPage('setting',this)" style="display:none">⚙️ Setting</button>
+  <span class="sync-badge"><span class="sync-dot"></span><span id="sync-status">Sync...</span></span>
+</nav>
+
+<!-- ============ DASHBOARD ============ -->
+<div id="page-dashboard" class="page active">
+  <div class="metrics">
+    <div class="metric"><div class="label">Total SKU</div><div class="value" id="m-total-sku">0</div></div>
+    <div class="metric blue"><div class="label">Total Stok Fisik</div><div class="value" id="m-stok-fisik">0</div></div>
+    <div class="metric amber"><div class="label">Total Reserved (POS)</div><div class="value" id="m-stok-reserved">0</div></div>
+    <div class="metric red"><div class="label">Antrean Outbound</div><div class="value" id="m-antrean-out">0</div><div class="sub">menunggu diproses gudang</div></div>
+    <div class="metric purple"><div class="label">Antrean Inbound</div><div class="value" id="m-antrean-in">0</div><div class="sub">dari produksi/supplier</div></div>
+  </div>
+  <div class="card">
+    <h2>📈 Aktivitas Terbaru</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Waktu</th><th>Tipe</th><th>SKU</th><th>Qty</th><th>Sumber</th><th>Petugas</th></tr></thead>
+        <tbody id="tbl-aktivitas-terbaru"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============ OUTBOUND ============ -->
+<div id="page-outbound" class="page">
+  <!-- Step indicator -->
+  <div class="steps" id="outbound-steps">
+    <div class="step active" id="ob-step-1"><div class="step-circle active">1</div><div class="step-label">Pilih Order</div></div>
+    <div class="step-line"></div>
+    <div class="step" id="ob-step-2"><div class="step-circle">2</div><div class="step-label">Picking FIFO</div></div>
+    <div class="step-line"></div>
+    <div class="step" id="ob-step-3"><div class="step-circle">3</div><div class="step-label">Label Resi</div></div>
+    <div class="step-line"></div>
+    <div class="step" id="ob-step-4"><div class="step-circle">4</div><div class="step-label">Handover Kurir</div></div>
+  </div>
+
+  <!-- Riwayat Handover — SENGAJA ditaruh di luar step1-4 (bukan di-nest
+       dalam outbound-step4 lagi) supaya selalu terlihat di halaman Outbound,
+       apa pun step yang lagi aktif. Sebelumnya nempel di dalam step4 yang
+       display:none default, jadi baru muncul kalau lagi proses handover
+       order tertentu — bikin serasa "hilang". Tombol cetak ulang di sini
+       juga jadi selalu bisa diakses tanpa harus scan resi dulu. -->
+  <div class="card" style="margin-bottom:16px">
+    <h2>📋 Riwayat Handover Hari Ini</h2>
+    <div id="handover-history"></div>
+  </div>
+
+  <!-- STEP 1: Pilih Order -->
+  <div id="outbound-step1">
+    <div class="card">
+      <div class="card-title-row">
+        <h2>📦 Antrean Outbound (dari POS)</h2>
+      </div>
+      <div class="hint-txt">Barang di sini sudah <b>ter-reservasi</b> (stok tersedia sudah dikurangi otomatis untuk mencegah oversell). Klik "Mulai Picking" untuk mengambil barang sesuai urutan <b>FIFO — expired paling awal duluan</b>.</div>
+      <div id="list-outbound"></div>
+    </div>
+    <div class="card" id="card-packed-outbound" style="display:none">
+      <div class="card-title-row">
+        <h2>🏷️ Sudah Dipicking — Siap Label Resi / Handover</h2>
+      </div>
+      <div class="hint-txt">Stok sudah terpotong, barang sudah di tangan staff. Lanjutkan ke pembuatan label resi lalu serah terima ke kurir supaya order ini selesai.</div>
+      <div id="list-outbound-packed"></div>
+    </div>
+  </div>
+
+  <!-- STEP 2: Picking FIFO -->
+  <div id="outbound-step2" style="display:none">
+    <div class="card">
+      <div class="card-title-row">
+        <div>
+          <h2>🧺 Proses Picking</h2>
+          <div style="font-size:12px;color:#9CA3AF;margin-top:2px" id="picking-order-label"></div>
+        </div>
+        <div id="picking-progress-info" style="text-align:right;font-size:13px;color:#9CA3AF"></div>
+      </div>
+
+      <div class="fifo-box">
+        <div class="fifo-title">⚠️ Perhatian FIFO — Ambil Sesuai Urutan Expired</div>
+        <div style="font-size:12px;color:#9CA3AF">Daftar di bawah sudah diurutkan otomatis: rak dengan tanggal expired <b style="color:#FFB547">paling awal</b> muncul lebih dulu. Ambil barang sesuai urutan, lalu centang.</div>
+      </div>
+
+      <div class="progress-bar-wrap"><div class="progress-bar" id="picking-progress-bar" style="width:0%"></div></div>
+      <div style="font-size:11px;color:#6B7280;text-align:right;margin-top:4px;margin-bottom:14px" id="picking-progress-text">0 dari 0 baris</div>
+
+      <div id="pick-list-container"></div>
+      <div id="pick-kurang-warning"></div>
+
+      <div class="btn-row">
+        <button class="btn" onclick="batalPicking()">← Batal, Kembali</button>
+        <button class="btn primary" id="btn-selesai-picking" onclick="selesaiPicking()" disabled>✅ Selesai Picking</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3: Label Resi (fitur BARU — kelanjutan setelah picking) -->
+  <div id="outbound-step3" style="display:none">
+    <div class="card">
+      <div class="card-title-row">
+        <div>
+          <h2>🏷️ Buat Label Resi Pengiriman</h2>
+          <div style="font-size:12px;color:#9CA3AF;margin-top:2px" id="label-order-info"></div>
+        </div>
+      </div>
+      <div class="hint-txt">Stok sudah terpotong &amp; barang sudah diambil dari rak. Lengkapi data pengiriman di bawah, centang Standar Packing, lalu klik <b>Simpan &amp; Cetak Label</b> — label (barcode, pengirim SASAGU, penerima, isi paket) langsung tersimpan &amp; tercetak.</div>
+
+      <div class="section-title">📇 Penerima <span style="font-weight:400;color:#6B7280;font-size:11px">(otomatis dari invoice POS — tidak perlu diketik ulang)</span></div>
+      <div id="label-penerima-preview" style="margin-bottom:14px"></div>
+
+      <div class="form-row">
+        <div class="fld">
+          <label>Pilih Ekspedisi Pengiriman</label>
+          <select id="label-ekspedisi">
+            <option value="">-- Pilih Ekspedisi --</option>
+            <option value="JNE">JNE</option>
+            <option value="J&amp;T Express">J&amp;T Express</option>
+            <option value="SiCepat">SiCepat</option>
+            <option value="AnterAja">AnterAja</option>
+            <option value="Wahana">Wahana</option>
+            <option value="TIKI">TIKI</option>
+            <option value="POS Indonesia">POS Indonesia</option>
+            <option value="Ninja Express">Ninja Express</option>
+            <option value="Kurir Sendiri">Kurir Sendiri</option>
+          </select>
+        </div>
+        <div class="fld">
+          <label>No. Resi <span style="color:#6B7280;font-weight:400">(opsional — nomor tracking dari ekspedisi, kalau sudah ada)</span></label>
+          <input id="label-noresi" placeholder="Boleh dikosongkan dulu kalau kurir belum kasih nomor resi...">
+          <div style="font-size:11px;color:#6B7280;margin-top:4px">No. Outbond (dokumen internal Sasagu) sudah otomatis dibuat sistem — label ikut tercetak begitu tombol "Simpan &amp; Cetak Label" di bawah diklik.</div>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="fld">
+          <label>Berat Paket (gram)</label>
+          <input id="label-berat" type="number" min="0" step="1">
+        </div>
+        <div class="fld">
+          <label>Catatan Pengiriman (opsional)</label>
+          <input id="label-catatan" placeholder="Contoh: Jangan dilipat, barang mudah rusak">
+        </div>
+      </div>
+
+      <div class="section-title">Isi Paket</div>
+      <div id="label-items-preview" class="qi-items" style="margin-bottom:14px"></div>
+
+      <div class="section-title" id="pack-checklist-title">✅ Standar Packing</div>
+      <div class="hint-txt" style="margin-top:0">Centang semua sebelum lanjut ke Handover Kurir. Checklist di bawah mengikuti Jenis Pengiriman order ini (diatur dari menu ⚙️ Setting → Standar Packing).</div>
+      <div id="pack-checklist"></div>
+
+      <div class="btn-row">
+        <button class="btn" onclick="batalLabelResi()">← Batal, Kembali ke Antrean</button>
+        <button class="btn primary" id="btn-konfirmasi-label" onclick="konfirmasiLabelResi()" disabled>💾🖨️ Simpan &amp; Cetak Label →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 4: Handover Kurir (fitur BARU — penutup alur outbound) -->
+  <div id="outbound-step4" style="display:none">
+    <div class="card">
+      <h2>🚚 Handover ke Kurir — Scan/Input Resi</h2>
+      <div class="hint-txt">Setelah paket dipacking &amp; resi ditempel, scan barcode resi atau ketik nomor resi/invoice untuk memverifikasi serah terima ke kurir.</div>
+
+      <div class="scan-box" style="margin:14px 0">
+        <span class="scan-icon">📱</span>
+        <input id="scan-handover" placeholder="Scan atau ketik nomor resi / invoice..." onkeydown="onHandoverScan(event)">
+      </div>
+
+      <div id="handover-result"></div>
+
+      <div class="btn-row" id="handover-btn-row" style="display:none">
+        <button class="btn" onclick="batalKeAntreanDariHandover()">← Kembali ke Antrean</button>
+        <button class="btn primary" onclick="konfirmasiHandoverKurir()">✅ Konfirmasi Serah Terima Kurir</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ INBOUND ============ -->
+<div id="page-inbound" class="page">
+  <div class="card" id="card-antrean-produksi" style="display:none">
+    <div class="card-title-row">
+      <h2>🔔 Antrean Inbound (dari Produksi/Supplier)</h2>
+    </div>
+    <div class="hint-txt">Barang di sini belum masuk stok gudang (dari Produksi otomatis, atau dari form penerimaan manual di bawah). Klik "Proses" untuk pilih rak &amp; memasukkan ke stok fisik.</div>
+    <div id="list-inbound"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title-row">
+      <h2>📥 Penerimaan Barang (Inbound Manual)</h2>
+    </div>
+    <div class="hint-txt">Untuk barang yang masuk lewat supplier luar / manual (bukan otomatis dari app Produksi). Nomor SPB dibuat otomatis &amp; dijamin anti-bentrok walau 2 staf input bersamaan.</div>
+
+    <div class="form-row">
+      <div class="fld">
+        <label>Nomor SPB (Surat Penerimaan Barang)</label>
+        <input id="spb-nomor" placeholder="Klik 'Ambil No. Otomatis'" readonly>
+      </div>
+      <div class="fld">
+        <label>&nbsp;</label>
+        <button class="btn sm" onclick="ambilNomorSPB()">🔄 Ambil No. Otomatis</button>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="fld">
+        <label>Supplier / Asal Barang</label>
+        <input id="spb-supplier" list="dl-supplier" placeholder="Nama supplier / Dapur Produksi">
+        <datalist id="dl-supplier"></datalist>
+      </div>
+      <div class="fld">
+        <label>Tanggal Penerimaan</label>
+        <input type="date" id="spb-tanggal">
+      </div>
+    </div>
+    <div class="fld"><label>Petugas Penerimaan</label><input id="spb-petugas" placeholder="Nama petugas gudang"></div>
+
+    <div class="section-title">Cari &amp; Tambah Produk</div>
+    <div class="hint-txt" style="margin-top:0">Bisa <b>scan barcode</b> (ketik SKU persis lalu Enter), atau <b>ketik nama produk</b> — nanti muncul saran, tinggal klik.</div>
+    <div class="ac-wrap">
+      <div class="scan-box">
+        <span class="scan-icon">📦</span>
+        <input id="inb-cari" placeholder="Scan barcode produk, atau ketik nama produk..." autocomplete="off" oninput="onInboundCariInput()" onkeydown="onInboundCariKeydown(event)">
+      </div>
+      <div class="ac-list" id="inb-ac-list" style="display:none"></div>
+    </div>
+
+    <div id="inbound-items-list"></div>
+    <div id="inbound-empty-state" style="text-align:center;padding:28px;color:#4B5563;font-size:13px">
+      <div style="font-size:30px;margin-bottom:6px">📦</div>
+      Cari produk di atas untuk mulai input penerimaan barang
+    </div>
+
+    <div class="btn-row">
+      <button class="btn primary" onclick="submitInboundManual()" id="btn-simpan-inbound" disabled>✅ Simpan Penerimaan (Masuk Antrean Proses)</button>
+      <button class="btn danger sm" onclick="resetInboundForm()">Reset</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📜 Riwayat Diajukan (menunggu diproses ke rak)</h2>
+    <div class="hint-txt" style="margin-top:0">Kalau tidak ada card "🔔 Antrean Inbound" di atas, berarti belum ada barang yang menunggu diproses.</div>
+  </div>
+</div>
+
+<!-- ============ PETA RAK ============ -->
+<div id="page-rak" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <h2>🗄️ Peta Rak Gudang</h2>
+      <button class="btn primary sm" onclick="openModal('modal-tambah-rak')">+ Tambah Rak</button>
+    </div>
+    <div class="rak-grid" id="rak-grid"></div>
+  </div>
+  <div class="card">
+    <h2>📦 Isi Rak per SKU</h2>
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Rak</th><th>SKU</th><th>Nama</th><th>Batch</th><th>Expired</th><th>Qty</th></tr></thead><tbody id="tbl-rack-stock"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PRODUK & STOK ============ -->
+<div id="page-stok" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <h2>📋 Produk &amp; Stok</h2>
+    </div>
+    <div class="hint-txt" style="margin-top:0"><b>Data master produk</b> (nama, kategori, harga, berat, dimensi) sekarang dikelola sepenuhnya lewat aplikasi <b>POS</b> — WMS hanya menampilkannya secara real-time. Untuk tambah/edit/import produk, buka halaman Produk di POS.</div>
+    <div class="hint-txt"><b>Stok Tersedia</b> = Stok Fisik − Reserved. Ini angka yang akan dipakai POS untuk validasi jual, jadi selalu real-time &amp; tidak akan oversell.</div>
+    <!-- FIX: banner peringatan stok yang belum punya lokasi rak (ditambahkan
+         supaya masalah ini kelihatan dari halaman Stok, SEBELUM ketahuan
+         mendadak saat proses Outbound diblokir). Diisi oleh renderStokTable(). -->
+    <div id="stok-belum-rak-warning"></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>SKU</th><th>Nama</th><th>Kategori</th><th>Berat</th><th>Stok Fisik</th><th>Reserved</th><th>Tersedia</th><th>Belum di Rak</th><th>Aksi</th></tr></thead>
+        <tbody id="tbl-stok"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============ RIWAYAT ============ -->
+<div id="page-riwayat" class="page">
+  <div class="card">
+    <h2>🔍 Riwayat Pergerakan Stok</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Waktu</th><th>Tipe</th><th>SKU</th><th>Nama</th><th>Qty</th><th>Rak</th><th>Sumber</th><th>Petugas</th></tr></thead>
+        <tbody id="tbl-riwayat"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============ USER (Kepala Gudang only) ============ -->
+<div id="page-user" class="page">
+  <div class="card">
+    <h2>👤 Manajemen User &amp; Peran</h2>
+    <div class="hint-txt">Sesuai permintaan: autentikasi murni password di kode (tanpa Firebase Auth), jadi akun dikelola langsung lewat variabel <code>WMS_ACCOUNTS</code> di dalam file HTML ini, lalu simpan ulang filenya.</div>
+    <div class="tbl-wrap">
+      <table><thead><tr><th>Username</th><th>Nama</th><th>Peran</th></tr></thead><tbody id="tbl-user"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SETTING (fitur BARU: Standar Packing per Jenis Pengiriman) ============ -->
+<div id="page-setting" class="page">
+  <div class="card">
+    <h2>⚙️ Standar Packing</h2>
+    <div class="hint-txt">Atur daftar checklist Standar Packing untuk tiap Jenis Pengiriman yang dipilih kasir di POS. Saat staff gudang membuat Label Resi (Outbound STEP 3), checklist yang muncul otomatis mengikuti Jenis Pengiriman order tersebut.</div>
+    <div id="packing-standard-editor"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- ===== MODAL: Stock Opname ===== -->
+<div class="modal-bg" id="modal-opname" style="display:none">
+  <div class="modal sm">
+    <h3>🛠️ Koreksi Stok (Opname)</h3>
+    <div class="fld"><label>Produk</label><input id="op-nama-label" disabled></div>
+    <div class="fld"><label>Stok Fisik Baru *</label><input id="op-stok-baru" type="number" min="0"></div>
+    <div class="fld"><label>Alasan *</label><textarea id="op-alasan" placeholder="Contoh: selisih hasil cek fisik bulanan"></textarea></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-opname')">Batal</button>
+      <button class="btn primary" onclick="submitOpname()">Simpan Koreksi</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MODAL: Tempatkan Stok ke Rak (FIX: penempatan stok lama yang
+     belum pernah tercatat masuk rak — TIDAK mengubah Stok Fisik agregat,
+     hanya mencatat DI RAK MANA sebagian/semua stok itu berada, supaya
+     proses Outbound/FIFO bisa menemukannya) ===== -->
+<div class="modal-bg" id="modal-tempatkan-rak" style="display:none">
+  <div class="modal sm">
+    <h3>📍 Tempatkan Stok ke Rak</h3>
+    <div class="fld"><label>Produk</label><input id="tk-nama-label" disabled></div>
+    <div class="fld"><label>Belum Punya Lokasi Rak</label><input id="tk-belum-label" disabled></div>
+    <div class="fld"><label>Simpan ke Rak *</label><select id="tk-rak"></select></div>
+    <div class="fld"><label>Jumlah *</label><input id="tk-qty" type="number" min="1"></div>
+    <div class="fld"><label>Kode Batch (opsional)</label><input id="tk-batch" placeholder="Contoh: BTC-2026-08"></div>
+    <div class="fld"><label>Tanggal Expired (opsional)</label><input id="tk-exp" type="date"></div>
+    <div class="hint-txt">Ini HANYA mencatat lokasi rak untuk stok yang sudah ada (Stok Fisik tidak berubah). Kalau ini barang baru yang belum pernah dihitung ke Stok Fisik, pakai <b>Stock Opname</b> dulu, atau alur <b>Inbound</b> biasa.</div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-tempatkan-rak')">Batal</button>
+      <button class="btn primary" onclick="submitTempatkanRak()">Simpan Lokasi</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MODAL: Tambah Rak ===== -->
+<div class="modal-bg" id="modal-tambah-rak" style="display:none">
+  <div class="modal sm">
+    <h3>➕ Tambah Rak</h3>
+    <div class="form-row">
+      <div class="fld"><label>Zona</label><select id="tr-zona"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+      <div class="fld"><label>Nomor</label><input id="tr-nomor" type="number" min="1" step="1" placeholder="7"></div>
+    </div>
+    <div class="form-row">
+      <div class="fld"><label>Level</label><select id="tr-level"><option value="L1">Level 1 (Bawah)</option><option value="L2">Level 2 (Tengah)</option><option value="L3">Level 3 (Atas)</option></select></div>
+      <div class="fld"><label>Kapasitas (unit)</label><input id="tr-kapasitas" type="number" placeholder="100"></div>
+    </div>
+    <div class="hint-txt" style="margin-top:0">Nomor otomatis diformat 4 digit (mis. 7 → 0007) supaya kode rak seragam &amp; gampang dibaca staff — angka di belakang inilah yang dilihat staff untuk cari lokasi.</div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-tambah-rak')">Batal</button>
+      <button class="btn primary" onclick="submitTambahRak()">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MODAL: Proses Inbound ===== -->
+<div class="modal-bg" id="modal-proses-inbound" style="display:none">
+  <div class="modal sm">
+    <h3>✅ Proses Inbound</h3>
+    <div class="fld"><label>Produk</label><input id="pi-nama-label" disabled></div>
+    <div class="fld"><label>Simpan ke Rak *</label><select id="pi-rak"></select></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-proses-inbound')">Batal</button>
+      <button class="btn primary" onclick="submitProsesInbound()">Konfirmasi Masuk Rak</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   AUTH — password murni JS, sesuai permintaan (tidak pakai Firebase Auth)
+========================================================================= */
+var WMS_ACCOUNTS = [
+  { username:'owner', password:'owner@sasagu', role:'Kepala Gudang', nama:'Kepala Gudang' },
+  { username:'staff1', password:'staff123',  role:'Staff Gudang',  nama:'Staff Gudang 1' }
+];
+var WMS_ROLES = ['Kepala Gudang','Staff Gudang'];
+var ALLOWED_PAGES = {
+  'Kepala Gudang': ['dashboard','outbound','inbound','rak','stok','riwayat','user','setting'],
+  'Staff Gudang':  ['dashboard','outbound','inbound','rak','stok','riwayat']
+};
+var currentSession = null;
+
+function wmsDoLogin(){
+  var u = document.getElementById('auth-user').value.trim();
+  var p = document.getElementById('auth-pass').value;
+  var errEl = document.getElementById('auth-err');
+  errEl.textContent = '';
+  if(!u || !p){ errEl.textContent = 'Username dan password wajib diisi.'; return; }
+  var akun = WMS_ACCOUNTS.find(function(a){ return a.username===u && a.password===p; });
+  if(!akun){ errEl.textContent = 'Username atau password salah.'; return; }
+  currentSession = { username:akun.username, role:akun.role, nama:akun.nama };
+  try{ localStorage.setItem('wms_session', JSON.stringify(currentSession)); }catch(e){}
+  afterLogin();
+}
+function wmsDoLogout(){
+  currentSession = null;
+  try{ localStorage.removeItem('wms_session'); }catch(e){}
+  document.getElementById('auth-overlay').classList.remove('hidden');
+}
+function afterLogin(){
+  document.getElementById('auth-overlay').classList.add('hidden');
+  var chip = document.getElementById('user-chip');
+  chip.innerHTML = '<span class="role-badge">'+currentSession.role+'</span><span>'+currentSession.nama+'</span> <button onclick="wmsDoLogout()">Keluar</button>';
+  document.getElementById('nav-user').style.display = currentSession.role==='Kepala Gudang' ? '' : 'none';
+  document.getElementById('nav-setting').style.display = currentSession.role==='Kepala Gudang' ? '' : 'none';
+  applyRoleRestrictions(currentSession.role);
+  initApp();
+}
+function applyRoleRestrictions(role){
+  var allowed = ALLOWED_PAGES[role] || [];
+  document.querySelectorAll('nav button[onclick^="gotoPage"]').forEach(function(btn){
+    var m = btn.getAttribute('onclick').match(/gotoPage\('([^']+)'/);
+    if(m && allowed.indexOf(m[1])===-1) btn.style.display='none'; else if(m) btn.style.display='';
+  });
+}
+(function tryAutoLogin(){
+  try{
+    var s = localStorage.getItem('wms_session');
+    if(!s) return;
+    currentSession = JSON.parse(s);
+    // FIX: dulu afterLogin() dipanggil langsung di sini, padahal <script type="module">
+    // di atas (yang mendefinisikan window.wmsListenProducts/wmsListenStock/dst) BELUM
+    // tentu selesai jalan pada titik ini (module selalu dieksekusi setelah <script>
+    // biasa seperti file ini). Akibatnya afterLogin()->initApp() memanggil fungsi yang
+    // belum ada, error-nya tertangkap diam-diam oleh catch di bawah, dan listener WMS
+    // TIDAK PERNAH terpasang. Sekarang menunggu sinyal window._wmsFirebaseReady dulu
+    // (lihat akhir <script type="module"> di atas) sebelum memanggil afterLogin().
+    if(window._wmsFirebaseReady){
+      afterLogin();
+    } else {
+      window.addEventListener('wmsFirebaseReady', function(){ afterLogin(); }, { once:true });
+    }
+  }catch(e){}
+})();
+document.addEventListener('keydown', function(e){
+  if(e.key==='Enter'){
+    var overlay = document.getElementById('auth-overlay');
+    if(overlay && !overlay.classList.contains('hidden')) wmsDoLogin();
+  }
+});
+
+/* =========================================================================
+   NAVIGASI & UTIL
+========================================================================= */
+function gotoPage(id, btn){
+  document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
+  document.getElementById('page-'+id).classList.add('active');
+  document.querySelectorAll('nav button.active').forEach(function(b){ b.classList.remove('active'); });
+  if(btn) btn.classList.add('active');
+}
+function toast(msg, type){
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = type==='err' ? 'show err' : 'show';
+  setTimeout(function(){ t.className=''; }, 3200);
+}
+function openModal(id){ document.getElementById(id).style.display='flex'; }
+function closeModal(id){ document.getElementById(id).style.display='none'; }
+// Membungkus nilai jadi literal JS string yang aman ditempel ke dalam
+// atribut onclick='...' (atribut pakai kutip satu, isinya JSON string
+// berkutip dua, dan kutip satu di dalam nilainya di-encode jadi &#39;
+// supaya tidak merusak atribut HTML).
+function esc(v){ return JSON.stringify(String(v==null?'':v)).replace(/'/g, "&#39;"); }
+function fmtTime(iso){
+  if(!iso) return '-';
+  try{ return new Date(iso).toLocaleString('id-ID',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}); }catch(e){ return iso; }
+}
+
+/* =========================================================================
+   DATA PENGIRIM (dipakai di Label Cetak — lihat renderLabelA6).
+   Ini data tetap milik SASAGU sendiri, bukan dari POS. Silakan ganti
+   telepon/alamat di bawah ini dengan data resmi gudang Sasagu.
+========================================================================= */
+var SASAGU_PENGIRIM = {
+  nama: 'PT Sasagu Inovasi Sagu',
+  perusahaan: 'SASAGU',
+  telepon: '-',
+  alamat: 'Jayapura, Papua, Indonesia'
+};
+
+/* =========================================================================
+   STATE LOKAL (di-refresh terus dari listener realtime Firestore)
+========================================================================= */
+var STATE = { products:[], stock:[], racks:[], rackStock:[], inbound:[], outbound:[], movements:[], handoverHistory:[], packingStandards:{}, customers:[] };
+
+function initApp(){
+  document.getElementById('sync-status').textContent = 'Tersambung';
+
+  window.wmsListenProducts(function(list){ STATE.products = list; renderStokTable(); fillSupplierDatalist(); });
+  window.wmsListenCustomers(function(list){ STATE.customers = list; renderOutboundList(); if(_labelOrder) renderPenerimaPreview(_labelOrder); });
+  window.wmsListenStock(function(list){ STATE.stock = list; renderStokTable(); renderDashboard(); });
+  window.wmsListenRacks(function(list){ STATE.racks = list; renderRakGrid(); fillRakSelect(); });
+  window.wmsListenRackStock(function(list){ STATE.rackStock = list; renderRackStockTable(); renderRakGrid(); });
+  window.wmsListenInbound(function(list){ STATE.inbound = list; renderInboundList(); renderDashboard(); });
+  window.wmsListenOutbound(function(list){ STATE.outbound = list; renderOutboundList(); renderDashboard(); });
+  window.wmsListenMovements(function(list){ STATE.movements = list; renderRiwayat(); renderDashboard(); });
+  window.wmsListenHandoverHistory(function(list){ STATE.handoverHistory = list; renderHandoverHistory(); });
+  window.wmsListenPackingStandards(function(map){ STATE.packingStandards = map; renderPackingStandardSetting(); });
+  window.wmsEnsurePackingStandardsDefault(PACK_CHECKLIST_ITEMS_DEFAULT, PACKING_TIPE_LABEL).catch(function(e){ console.error('gagal seed packing_standards', e); });
+
+  renderUserTable();
+}
+
+/* ---------- Dashboard ---------- */
+function renderDashboard(){
+  document.getElementById('m-total-sku').textContent = STATE.products.length;
+  var totalFisik=0, totalReserved=0;
+  STATE.stock.forEach(function(s){ totalFisik += (s.stokFisik||0); totalReserved += (s.stokReserved||0); });
+  document.getElementById('m-stok-fisik').textContent = totalFisik;
+  document.getElementById('m-stok-reserved').textContent = totalReserved;
+  document.getElementById('m-antrean-out').textContent = STATE.outbound.length;
+  document.getElementById('m-antrean-in').textContent = STATE.inbound.length;
+
+  var bIn = document.getElementById('badge-inbound'), bOut = document.getElementById('badge-outbound');
+  bIn.style.display = STATE.inbound.length ? 'inline-block':'none'; bIn.textContent = STATE.inbound.length;
+  bOut.style.display = STATE.outbound.length ? 'inline-block':'none'; bOut.textContent = STATE.outbound.length;
+
+  var tb = document.getElementById('tbl-aktivitas-terbaru');
+  tb.innerHTML = STATE.movements.slice(0,10).map(function(m){
+    return '<tr><td>'+fmtTime(m.createdAt)+'</td><td>'+badgeTipe(m.type)+'</td><td>'+(m.sku||'-')+'</td><td>'+(m.qty>0?'+':'')+m.qty+'</td><td>'+(m.source||'-')+'</td><td>'+(m.petugas||'-')+'</td></tr>';
+  }).join('') || '<tr><td colspan="6" style="text-align:center;color:#6B7280">Belum ada aktivitas</td></tr>';
+}
+function badgeTipe(t){
+  if(t==='inbound') return '<span class="badge green">Inbound</span>';
+  if(t==='outbound') return '<span class="badge blue">Outbound</span>';
+  return '<span class="badge amber">Adjustment</span>';
+}
+
+/* ---------- Produk & Stok ---------- */
+function renderStokTable(){
+  var tb = document.getElementById('tbl-stok');
+  var produkBelumRak = []; // FIX: kumpulkan SKU yang stok agregatnya > total di rack_stock
+  tb.innerHTML = STATE.products.map(function(p){
+    var s = STATE.stock.find(function(x){ return x.sku===p.sku; }) || { stokFisik:0, stokReserved:0 };
+    var tersedia = (s.stokFisik||0) - (s.stokReserved||0);
+    // FIX: total unit SKU ini yang SUDAH tercatat di suatu rak (rack_stock)
+    var diRak = STATE.rackStock.filter(function(rs){ return rs.sku===p.sku; }).reduce(function(a,b){ return a+(b.qty||0); }, 0);
+    var belumDiRak = Math.max(0, (s.stokFisik||0) - diRak);
+    if(belumDiRak>0) produkBelumRak.push({ sku:p.sku, nama:p.nama, belumDiRak:belumDiRak });
+    return '<tr>'+
+      '<td><span class="sku-chip" style="font-family:monospace;font-size:11px;background:#1A1F2E;border:1px solid #2A2F3E;border-radius:5px;padding:1px 7px;color:#9CA3AF">'+p.sku+'</span></td>'+
+      '<td>'+p.nama+'</td><td>'+(p.kategori||'-')+'</td>'+
+      '<td>'+(p.beratGram? p.beratGram+' gr' : '<span style="color:#FF5252">belum diisi</span>')+'</td>'+
+      '<td>'+(s.stokFisik||0)+'</td>'+
+      '<td>'+(s.stokReserved||0)+'</td>'+
+      '<td><b style="color:'+(tersedia<=0?'#FF5252':'#00E59B')+'">'+tersedia+'</b></td>'+
+      '<td>'+(belumDiRak>0 ? '<b style="color:#FF5252">'+belumDiRak+'</b>' : '<span style="color:#6B7280">0</span>')+'</td>'+
+      '<td><button class="btn sm" onclick=\'bukaOpname('+esc(p.sku)+','+esc(p.nama)+')\'>Opname</button>'+
+      (belumDiRak>0 ? ' <button class="btn sm primary" onclick=\'bukaTempatkanRak('+esc(p.sku)+','+esc(p.nama)+','+esc(belumDiRak)+')\'>📍 Tempatkan</button>' : '')+
+      '</td>'+
+    '</tr>';
+  }).join('') || '<tr><td colspan="9" style="text-align:center;color:#6B7280">Belum ada produk</td></tr>';
+
+  // FIX: banner ringkasan di atas tabel, supaya masalah "stok belum berlokasi
+  // rak" kelihatan dari halaman Stok sebelum ketahuan mendadak saat Outbound.
+  var warnEl = document.getElementById('stok-belum-rak-warning');
+  if(warnEl){
+    if(produkBelumRak.length>0){
+      var totalUnit = produkBelumRak.reduce(function(a,b){return a+b.belumDiRak;},0);
+      warnEl.innerHTML = '<div class="hint-txt" style="color:#FF5252;background:rgba(255,82,82,.08);border:1px solid rgba(255,82,82,.25);border-radius:10px;padding:10px 12px">⚠️ '+produkBelumRak.length+' produk ('+totalUnit+' unit) tercatat punya stok fisik tapi belum ada di rak manapun: '+produkBelumRak.map(function(x){return x.nama+' ('+x.belumDiRak+')';}).join(', ')+'. Klik tombol "📍 Tempatkan" di baris produknya untuk memilih rak, atau proses Outbound untuk SKU ini akan terblokir.</div>';
+    } else {
+      warnEl.innerHTML = '';
+    }
+  }
+}
+var _opnameSku=null;
+function bukaOpname(sku, nama){
+  _opnameSku = sku;
+  document.getElementById('op-nama-label').value = sku+' — '+nama;
+  document.getElementById('op-stok-baru').value='';
+  document.getElementById('op-alasan').value='';
+  openModal('modal-opname');
+}
+function submitOpname(){
+  var stokBaru = Number(document.getElementById('op-stok-baru').value);
+  var alasan = document.getElementById('op-alasan').value.trim();
+  if(isNaN(stokBaru) || stokBaru<0){ toast('Stok fisik baru tidak valid','err'); return; }
+  if(!alasan){ toast('Alasan wajib diisi','err'); return; }
+  var p = STATE.products.find(function(x){ return x.sku===_opnameSku; });
+  window.wmsStockOpname(_opnameSku, p?p.nama:_opnameSku, stokBaru, alasan, currentSession.nama).then(function(){
+    toast('Koreksi stok tersimpan'); closeModal('modal-opname');
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+
+// FIX: buka modal "Tempatkan Stok ke Rak" untuk mengisi lokasi rak dari
+// stok yang sudah ada tapi belum tercatat di rack_stock manapun.
+var _tempatkanSku=null, _tempatkanNama=null, _tempatkanMaxQty=0;
+function bukaTempatkanRak(sku, nama, belumDiRak){
+  _tempatkanSku = sku; _tempatkanNama = nama; _tempatkanMaxQty = Number(belumDiRak)||0;
+  document.getElementById('tk-nama-label').value = sku+' — '+nama;
+  document.getElementById('tk-belum-label').value = _tempatkanMaxQty+' unit';
+  document.getElementById('tk-qty').value = _tempatkanMaxQty;
+  document.getElementById('tk-qty').max = _tempatkanMaxQty;
+  document.getElementById('tk-batch').value='';
+  document.getElementById('tk-exp').value='';
+  fillRakSelect('tk-rak');
+  openModal('modal-tempatkan-rak');
+}
+function submitTempatkanRak(){
+  var rak = document.getElementById('tk-rak').value;
+  var qty = Number(document.getElementById('tk-qty').value);
+  var batch = document.getElementById('tk-batch').value.trim();
+  var exp = document.getElementById('tk-exp').value || null;
+  if(!rak){ toast('Pilih rak tujuan dulu','err'); return; }
+  if(!(qty>0)){ toast('Jumlah tidak valid','err'); return; }
+  if(qty > _tempatkanMaxQty){
+    toast('Jumlah melebihi stok yang belum berlokasi ('+_tempatkanMaxQty+' unit). Kalau ini barang baru, pakai Inbound, bukan Tempatkan.','err');
+    return;
+  }
+  window.wmsTempatkanStokKeRak(_tempatkanSku, _tempatkanNama, rak, qty, batch, exp, currentSession.nama).then(function(){
+    toast('Lokasi rak tersimpan'); closeModal('modal-tempatkan-rak');
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+
+
+/* ---------- Rak ----------
+   Kode rak SENGAJA diakhiri dengan angka (bukan huruf level) dan angkanya
+   selalu di-pad 4 digit (mis. 0007), supaya semua kode rak seragam
+   panjangnya. Staff gudang biasanya membaca 3-4 digit terakhir untuk
+   membedakan lokasi — kalau formatnya tidak rata (…-5 vs …-10 vs …-104)
+   itu jadi susah dipindai cepat di rak yang penuh. */
+function padNomorRak(nomor){
+  var digits = String(nomor).replace(/\D/g,'') || '0';
+  return digits.length>=4 ? digits : digits.padStart(4,'0');
+}
+function rakCodeOf(r){
+  return r.zona+'-'+r.level+'-'+padNomorRak(r.nomor);
+}
+function renderRakGrid(){
+  var grid = document.getElementById('rak-grid');
+  var sorted = STATE.racks.slice().sort(function(a,b){
+    return rakCodeOf(a).localeCompare(rakCodeOf(b), undefined, {numeric:true});
+  });
+  grid.innerHTML = sorted.map(function(r){
+    var code = rakCodeOf(r);
+    var parts = code.split('-');
+    var codeHtml = parts.slice(0,-1).join('-')+'-<span class="rak-num">'+parts[parts.length-1]+'</span>';
+    var terisi = STATE.rackStock.filter(function(rs){ return rs.rakCode===code; }).reduce(function(a,b){return a+(b.qty||0);},0);
+    return '<div class="rak-cell"><span class="rak-del" onclick=\'hapusRak('+esc(r.id)+')\'>✕</span>'+
+      '<div class="rak-code">'+codeHtml+'</div>'+
+      '<div class="rak-info">Isi: '+terisi+' / '+(r.kapasitas||0)+'</div></div>';
+  }).join('') || '<div style="color:#6B7280;font-size:12px">Belum ada rak. Klik "Tambah Rak".</div>';
+}
+function fillRakSelect(targetId){
+  // FIX: tambah parameter opsional targetId supaya fungsi ini bisa dipakai
+  // ulang untuk select rak lain (mis. modal Tempatkan ke Rak). Kalau tidak
+  // diisi, perilaku lama tetap sama persis (isi #pi-rak).
+  var el = document.getElementById(targetId || 'pi-rak');
+  if(!el) return;
+  var sorted = STATE.racks.slice().sort(function(a,b){
+    return rakCodeOf(a).localeCompare(rakCodeOf(b), undefined, {numeric:true});
+  });
+  el.innerHTML = sorted.map(function(r){
+    var code = rakCodeOf(r);
+    return '<option value="'+code+'">'+code+'</option>';
+  }).join('') || '<option value="">Belum ada rak</option>';
+}
+function renderRackStockTable(){
+  var tb = document.getElementById('tbl-rack-stock');
+  var rows = STATE.rackStock.slice().sort(function(a,b){
+    var ea = a.tglExpired || '9999-12-31', eb = b.tglExpired || '9999-12-31';
+    return ea.localeCompare(eb);
+  });
+  tb.innerHTML = rows.map(function(rs){
+    var expWarna = '#C9C7C1';
+    if(rs.tglExpired){
+      var sisaHari = Math.floor((new Date(rs.tglExpired) - new Date())/86400000);
+      if(sisaHari<=30) expWarna = '#FF5252'; else if(sisaHari<=60) expWarna='#FFB547';
+    }
+    return '<tr><td>'+rs.rakCode+'</td><td>'+rs.sku+'</td><td>'+rs.nama+'</td><td>'+(rs.batchCode||'-')+'</td>'+
+      '<td style="color:'+expWarna+'">'+(rs.tglExpired||'-')+'</td><td>'+rs.qty+'</td></tr>';
+  }).join('') || '<tr><td colspan="6" style="text-align:center;color:#6B7280">Belum ada isi rak</td></tr>';
+}
+function submitTambahRak(){
+  var zona = document.getElementById('tr-zona').value;
+  var nomorRaw = document.getElementById('tr-nomor').value.trim();
+  var level = document.getElementById('tr-level').value;
+  var kap = document.getElementById('tr-kapasitas').value;
+  if(!nomorRaw || !/^\d+$/.test(nomorRaw)){ toast('Nomor rak wajib diisi angka','err'); return; }
+  // Nomor selalu disimpan sudah di-pad 4 digit (mis. 0007) supaya kode rak
+  // seragam panjangnya & gampang dipindai staff (lihat rakCodeOf()).
+  var nomor = padNomorRak(nomorRaw);
+  window.wmsAddRack(zona, nomor, level, kap).then(function(){
+    toast('Rak ditambahkan'); closeModal('modal-tambah-rak');
+    document.getElementById('tr-nomor').value=''; document.getElementById('tr-kapasitas').value='';
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+function hapusRak(id){
+  if(!confirm('Hapus rak ini?')) return;
+  window.wmsDeleteRack(id).then(function(){ toast('Rak dihapus'); }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+
+/* ---------- Inbound ---------- */
+function renderInboundList(){
+  var wrap = document.getElementById('list-inbound');
+  var card = document.getElementById('card-antrean-produksi');
+  card.style.display = STATE.inbound.length ? '' : 'none';
+  wrap.innerHTML = STATE.inbound.map(function(it){
+    var metaSpb = it.spbNumber ? (' • SPB: '+it.spbNumber) : '';
+    var metaExp = it.tglExpired ? (' • Exp: '+it.tglExpired) : '';
+    
+    // [BARU] Cek apakah produk sudah terdaftar di master POS
+    var isRegistered = STATE.products.some(function(p){ return p.sku === it.sku; });
+    var warningBadge = '';
+    if(!isRegistered){
+      warningBadge = ' <span class="badge red" title="Produk ini belum terdaftar di master POS. Data SKU & Nama diambil langsung dari dokumen inbound.">⚠️ Belum Terdaftar di POS</span>';
+    }
+    
+    return '<div class="queue-item"><div class="qi-top"><div><div class="qi-title">'+it.nama+' <span class="badge gray">'+it.sku+'</span>'+warningBadge+'</div>'+
+      '<div class="qi-meta">Qty: '+it.qty+' '+(it.satuan||'')+' • Batch: '+(it.batchCode||'-')+metaExp+' • Sumber: '+(it.sumber||'-')+metaSpb+' • '+fmtTime(it.createdAt)+'</div></div>'+
+      '<div style="display:flex;gap:6px">'+
+      '<button class="btn sm" onclick=\'cetakSPBInbound('+esc(it.id)+')\'>🖨️ Cetak SPB</button>'+
+      '<button class="btn primary sm" onclick=\'bukaProsesInbound('+esc(it.id)+','+esc(it.sku)+','+esc(it.nama)+')\'>Proses</button></div></div></div>';
+  }).join('') || '<div style="color:#6B7280;font-size:12px">Tidak ada antrean inbound.</div>';
+}
+
+/* ---------- Cetak SPB (Surat Penerimaan Barang) ----------
+   1 SPB bisa berisi banyak item (lihat wmsAjukanInboundManual), tapi
+   tersimpan sebagai dokumen terpisah per item di inbound_queue. Supaya
+   yang tercetak 1 lembar SPB berisi SEMUA itemnya (bukan kepisah-pisah),
+   fungsi ini kumpulkan dulu semua baris dengan spbNumber yang sama.
+   Item dari Produksi/sumber lain yang tidak punya spbNumber tetap bisa
+   dicetak sebagai slip 1 item. Bisa dipakai berkali-kali (cetak ulang)
+   selama dokumennya masih di antrean (status 'pending', belum diproses
+   ke rak) — begitu sudah diproses, dokumennya keluar dari antrean ini. */
+function cariItemsUntukSPB(refItem){
+  if(refItem.spbNumber){
+    return STATE.inbound.filter(function(x){ return x.spbNumber===refItem.spbNumber; });
+  }
+  return [refItem];
+}
+function renderPrintSPB(items){
+  var ref = items[0];
+  var tgl = new Date().toLocaleString('id-ID');
+  var itemsHtml = items.map(function(it){
+    return '<div><span>'+it.nama+' ('+it.sku+') • Batch '+(it.batchCode||'-')+(it.tglExpired?(' • Exp '+it.tglExpired):'')+'</span><span>x'+it.qty+'</span></div>';
+  }).join('');
+  document.getElementById('print-label-area').innerHTML =
+    '<div class="lbl-box">'+
+      '<div class="lbl-header"><div class="lbl-brand">SASAGU — SURAT PENERIMAAN BARANG</div><div class="lbl-ekspedisi">'+(ref.sumber||'-')+'</div></div>'+
+      '<div class="lbl-resi" style="font-size:20px">'+(ref.spbNumber||'(Tanpa No. SPB)')+'</div>'+
+      '<div class="lbl-row">Supplier/Sumber: <strong>'+(ref.supplier||ref.sumber||'-')+'</strong></div>'+
+      '<div class="lbl-row">Tanggal: '+(ref.tanggal||'-')+'</div>'+
+      '<div class="lbl-row">Petugas Penerimaan: '+(ref.diajukanOleh||'-')+'</div>'+
+      '<div class="lbl-row">Dicetak: '+tgl+'</div>'+
+      '<div class="lbl-items">'+itemsHtml+'</div>'+
+    '</div>';
+}
+function cetakSPBInbound(id){
+  var refItem = STATE.inbound.find(function(x){ return x.id===id; });
+  if(!refItem){ toast('Dokumen inbound tidak ditemukan (mungkin sudah diproses ke rak)','err'); return; }
+  var items = cariItemsUntukSPB(refItem);
+  renderPrintSPB(items);
+  setTimeout(function(){ window.print(); }, 80);
+}
+var _prosesInboundId=null;
+function bukaProsesInbound(id, sku, nama){
+  // [BARU] Cek apakah produk sudah terdaftar di master POS
+  var isRegistered = STATE.products.some(function(p){ return p.sku === sku; });
+  if(!isRegistered){
+    var ok = confirm(
+      '⚠️ PERHATIAN: Produk ini belum terdaftar di POS!\n\n' +
+      'SKU: ' + sku + '\n' +
+      'Nama: ' + nama + '\n\n' +
+      'Stok akan ditambahkan ke WMS untuk SKU yang tidak dikenal POS.\n' +
+      'Hal ini bisa menyebabkan data stok tidak sinkron antara WMS dan POS.\n\n' +
+      'Tetap lanjutkan proses inbound?'
+    );
+    if(!ok) return;
+  }
+  _prosesInboundId = id;
+  document.getElementById('pi-nama-label').value = sku+' — '+nama;
+  openModal('modal-proses-inbound');
+}
+function submitProsesInbound(){
+  var rak = document.getElementById('pi-rak').value;
+  if(!rak){ toast('Pilih rak tujuan','err'); return; }
+  window.wmsProsesInbound(_prosesInboundId, rak, currentSession.nama).then(function(){
+    toast('Inbound diproses, stok bertambah'); closeModal('modal-proses-inbound');
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+
+/* ---------- Form Penerimaan Barang (Inbound Manual) — FITUR BARU ----------
+   Alur: staff isi header (SPB/supplier/tanggal/petugas) -> cari produk lewat
+   scan (ketik SKU persis + Enter) ATAU ketik nama produk (muncul saran,
+   klik untuk pilih) -> tiap produk yang dipilih jadi 1 baris item yang bisa
+   diisi qty/batch/tanggal expired -> Simpan -> semua baris masuk sekaligus
+   ke inbound_queue via wmsAjukanInboundManual (atomik, auto-ID, anti-bentrok),
+   lalu tetap harus "Diproses" satu-satu (pilih rak) seperti alur lama supaya
+   stok tercatat benar per rak/batch. */
+var inboundManualItems = [];
+
+function fillSupplierDatalist(){
+  var dl = document.getElementById('dl-supplier');
+  if(!dl) return;
+  var unik = Array.from(new Set(STATE.products.map(function(p){ return (p.supplier||'').trim(); }).filter(Boolean)));
+  dl.innerHTML = unik.map(function(s){ return '<option value="'+s+'">'; }).join('');
+}
+
+function ambilNomorSPB(){
+  var btn = event ? event.target : null;
+  if(btn) btn.disabled = true;
+  window.wmsGenerateSPB().then(function(no){
+    document.getElementById('spb-nomor').value = no;
+    if(!document.getElementById('spb-tanggal').value){
+      document.getElementById('spb-tanggal').value = new Date().toISOString().slice(0,10);
+    }
+    if(!document.getElementById('spb-petugas').value && currentSession){
+      document.getElementById('spb-petugas').value = currentSession.nama;
+    }
+    toast('No. SPB: '+no);
+  }).catch(function(err){ toast('Gagal ambil No. SPB: '+err.message,'err'); }).finally(function(){
+    if(btn) btn.disabled = false;
+  });
+}
+
+function onInboundCariInput(){
+  var q = document.getElementById('inb-cari').value.trim().toLowerCase();
+  var acList = document.getElementById('inb-ac-list');
+  if(q.length<1){ acList.style.display='none'; acList.innerHTML=''; return; }
+  var hasil = STATE.products.filter(function(p){
+    return p.sku.toLowerCase().indexOf(q)>-1 || (p.nama||'').toLowerCase().indexOf(q)>-1;
+  }).slice(0,8);
+  if(!hasil.length){ acList.style.display='none'; acList.innerHTML=''; return; }
+  acList.innerHTML = hasil.map(function(p){
+    return '<div class="ac-item" onclick=\'pilihProdukInbound('+esc(p.sku)+')\'>'+p.nama+' <span class="ac-sku">'+p.sku+'</span></div>';
+  }).join('');
+  acList.style.display='block';
+}
+function onInboundCariKeydown(e){
+  if(e.key==='Enter'){
+    e.preventDefault();
+    var val = document.getElementById('inb-cari').value.trim();
+    // Perilaku scan barcode: kalau ketikan PERSIS cocok 1 SKU, langsung tambah
+    var exact = STATE.products.find(function(p){ return p.sku===val; });
+    if(exact){ pilihProdukInbound(exact.sku); return; }
+    // Kalau hasil pencarian nama cuma 1, Enter juga langsung pilih itu
+    var q = val.toLowerCase();
+    var hasil = STATE.products.filter(function(p){
+      return p.sku.toLowerCase().indexOf(q)>-1 || (p.nama||'').toLowerCase().indexOf(q)>-1;
+    });
+    if(hasil.length===1){ pilihProdukInbound(hasil[0].sku); return; }
+    if(val && hasil.length===0) toast('Produk tidak ditemukan: '+val,'err');
+  }
+}
+function pilihProdukInbound(sku){
+  var p = STATE.products.find(function(x){ return x.sku===sku; });
+  if(!p){ toast('Produk tidak ditemukan','err'); return; }
+  var existing = inboundManualItems.find(function(it){ return it.sku===sku && !it.batchCode; });
+  if(existing){ existing.qty++; }
+  else {
+    inboundManualItems.push({ sku:p.sku, nama:p.nama, satuan:p.satuan||'pcs', qty:1, batchCode:'', tglExpired:'' });
+  }
+  document.getElementById('inb-cari').value='';
+  document.getElementById('inb-ac-list').style.display='none';
+  document.getElementById('inb-ac-list').innerHTML='';
+  renderInboundManualItems();
+}
+function ubahItemInbound(idx, field, val){
+  if(!inboundManualItems[idx]) return;
+  inboundManualItems[idx][field] = field==='qty' ? Number(val) : val;
+  updateBtnSimpanInbound();
+}
+function hapusItemInbound(idx){
+  inboundManualItems.splice(idx,1);
+  renderInboundManualItems();
+}
+function updateBtnSimpanInbound(){
+  var btn = document.getElementById('btn-simpan-inbound');
+  var valid = inboundManualItems.length>0 && inboundManualItems.every(function(it){
+    return it.qty>0 && it.batchCode.trim() && it.tglExpired;
+  });
+  btn.disabled = !valid;
+}
+function renderInboundManualItems(){
+  var wrap = document.getElementById('inbound-items-list');
+  var empty = document.getElementById('inbound-empty-state');
+  empty.style.display = inboundManualItems.length ? 'none' : 'block';
+  wrap.innerHTML = inboundManualItems.map(function(it, idx){
+    return '<div class="pick-row" style="align-items:flex-end;flex-wrap:wrap">'+
+      '<div class="pr-info" style="min-width:160px"><div class="pr-title">'+it.nama+'</div><div class="pr-meta">'+it.sku+' • '+it.satuan+'</div></div>'+
+      '<div class="fld" style="width:80px;margin:0"><label>Qty</label><input type="number" min="1" value="'+it.qty+'" onchange="ubahItemInbound('+idx+',\'qty\',this.value)"></div>'+
+      '<div class="fld" style="width:150px;margin:0"><label>Kode Batch *</label><input value="'+it.batchCode+'" placeholder="BATCH-001" onchange="ubahItemInbound('+idx+',\'batchCode\',this.value)"></div>'+
+      '<div class="fld" style="width:160px;margin:0"><label>Tgl. Expired *</label><input type="date" value="'+it.tglExpired+'" onchange="ubahItemInbound('+idx+',\'tglExpired\',this.value)"></div>'+
+      '<button class="btn danger sm" onclick="hapusItemInbound('+idx+')">✕</button>'+
+    '</div>';
+  }).join('');
+  updateBtnSimpanInbound();
+}
+function resetInboundForm(){
+  inboundManualItems = [];
+  document.getElementById('spb-nomor').value='';
+  document.getElementById('spb-supplier').value='';
+  document.getElementById('spb-tanggal').value='';
+  document.getElementById('spb-petugas').value='';
+  renderInboundManualItems();
+}
+function submitInboundManual(){
+  var spb = document.getElementById('spb-nomor').value.trim();
+  var supplier = document.getElementById('spb-supplier').value.trim();
+  var tanggal = document.getElementById('spb-tanggal').value;
+  var petugas = document.getElementById('spb-petugas').value.trim() || (currentSession?currentSession.nama:'-');
+  if(!spb){ toast('Ambil No. SPB dulu','err'); return; }
+  if(!inboundManualItems.length){ toast('Belum ada produk ditambahkan','err'); return; }
+  var invalid = inboundManualItems.find(function(it){ return !(it.qty>0) || !it.batchCode.trim() || !it.tglExpired; });
+  if(invalid){ toast('Qty, Kode Batch, dan Tgl. Expired wajib diisi tiap baris','err'); return; }
+  var btn = document.getElementById('btn-simpan-inbound');
+  btn.disabled = true; btn.textContent = 'Menyimpan...';
+  window.wmsAjukanInboundManual(spb, supplier, tanggal, petugas, inboundManualItems).then(function(){
+    toast('✅ Penerimaan disimpan, masuk antrean "Proses" untuk dipilihkan rak');
+    resetInboundForm();
+    btn.textContent = '✅ Simpan Penerimaan (Masuk Antrean Proses)';
+  }).catch(function(err){
+    toast('Gagal: '+err.message,'err');
+    btn.disabled = false; btn.textContent = '✅ Simpan Penerimaan (Masuk Antrean Proses)';
+  });
+}
+document.addEventListener('click', function(e){
+  var acList = document.getElementById('inb-ac-list');
+  if(acList && !e.target.closest('.ac-wrap')) acList.style.display='none';
+});
+
+/* ---------- Outbound ---------- */
+// Badge kecil "Jenis Pengiriman" (tipePacking) buat ditempel di daftar
+// antrean Outbound, supaya staff gudang tahu order ini nanti pakai
+// checklist Standar Packing yang mana sebelum mulai picking.
+function packingBadge(o){
+  var tipe = o.tipePacking || 'dalam_kota';
+  var label = PACKING_TIPE_LABEL[tipe] || tipe;
+  var cls = tipe==='export' ? 'amber' : (tipe==='luar_kota' ? 'blue' : 'gray');
+  return '<span class="badge '+cls+'">'+label+'</span>';
+}
+function renderOutboundList(){
+  var pending = STATE.outbound.filter(function(o){ return o.status==='pending'; });
+  var packed  = STATE.outbound.filter(function(o){ return o.status==='packed'; });
+
+  var wrap = document.getElementById('list-outbound');
+  wrap.innerHTML = pending.map(function(o){
+    var itemsHtml = (o.items||[]).map(function(it){ return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>'; }).join('');
+    return '<div class="queue-item"><div class="qi-top"><div><div class="qi-title">Invoice '+(o.invoiceNo||'-')+'</div>'+
+      '<div class="qi-meta">Kasir: '+(o.kasir||'-')+' • '+fmtTime(o.createdAt)+' • '+packingBadge(o)+(resolveCustomer(o)?'':' • <span style="color:#FFB547">penerima belum terkirim dari POS</span>')+'</div></div>'+
+      '<div style="display:flex;gap:6px;flex-wrap:wrap">'+
+      '<button class="btn danger sm" onclick=\'prosesBatalOutbound('+esc(o.id)+')\'>Batal</button>'+
+      '<button class="btn primary sm" onclick=\'mulaiPicking('+esc(o.id)+')\'>🧺 Mulai Picking</button></div></div>'+
+      '<div class="qi-items">'+itemsHtml+'</div></div>';
+  }).join('') || '<div style="color:#6B7280;font-size:12px">Tidak ada antrean outbound.</div>';
+
+  // FIX: order yang sudah selesai picking ('packed') dulu hilang begitu saja
+  // dari daftar (langsung 'done'). Sekarang ditampilkan di sini supaya staff
+  // bisa melanjutkan ke Label Resi / Handover, termasuk kalau sesi
+  // sebelumnya terputus (misal browser ditutup di tengah proses).
+  var cardPacked = document.getElementById('card-packed-outbound');
+  var wrapPacked = document.getElementById('list-outbound-packed');
+  if(packed.length){
+    cardPacked.style.display = '';
+    wrapPacked.innerHTML = packed.map(function(o){
+      var itemsHtml = (o.items||[]).map(function(it){ return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>'; }).join('');
+      var sudahLabel = !!o.labelAt;
+      var statusLabelTxt = sudahLabel
+        ? ((o.noResi ? ('Resi '+o.noResi+' ('+(o.ekspedisi||'-')+')') : 'Label resi tersimpan, No. Resi ekspedisi belum diisi')+' — siap handover')
+        : 'Belum dibuatkan label resi';
+      return '<div class="queue-item"><div class="qi-top"><div><div class="qi-title">Invoice '+(o.invoiceNo||'-')+'</div>'+
+        '<div class="qi-meta">Kasir: '+(o.kasir||'-')+' • '+packingBadge(o)+' • '+statusLabelTxt+(resolveCustomer(o)?'':' • <span style="color:#FFB547">penerima belum terkirim dari POS</span>')+'</div></div>'+
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">'+
+        (sudahLabel ? '<button class="btn sm" onclick=\'cetakLabelOutbound('+esc(o.id)+')\'>🖨️ Cetak Ulang Label</button>' : '')+
+        '<button class="btn primary sm" onclick=\'lanjutkanOutboundPacked('+esc(o.id)+')\'>'+(sudahLabel?'🚚 Lanjut ke Handover':'🏷️ Buat Label Resi')+' →</button></div></div>'+
+        '<div class="qi-items">'+itemsHtml+'</div></div>';
+    }).join('');
+  } else {
+    cardPacked.style.display = 'none';
+    wrapPacked.innerHTML = '';
+  }
+}
+function lanjutkanOutboundPacked(id){
+  var order = STATE.outbound.find(function(o){ return o.id===id; });
+  if(!order){ toast('Order tidak ditemukan','err'); return; }
+  if(order.labelAt){
+    setObStep(4);
+    renderHandoverHistory();
+    document.getElementById('handover-result').innerHTML='';
+    document.getElementById('handover-btn-row').style.display='none';
+    var scanEl = document.getElementById('scan-handover');
+    var lookupVal = order.noResi || order.invoiceNo;
+    scanEl.value = lookupVal;
+    prosesHandoverLookup(lookupVal);
+  } else {
+    mulaiLabelResi(order);
+  }
+}
+function prosesBatalOutbound(id){
+  var alasan = prompt('Alasan pembatalan?','Invoice dibatalkan customer');
+  if(alasan===null) return;
+  window.wmsBatalOutbound(id, currentSession.nama, alasan).then(function(){
+    toast('Order dibatalkan, reservasi dilepas');
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+
+/* ---------- Picking FIFO (fitur baru) ----------
+   Step 2 outbound. Untuk tiap item di order, cari baris rack_stock dengan
+   SKU sama, urutkan expired PALING AWAL duluan, lalu alokasikan qty yang
+   dibutuhkan dari baris-baris itu berurutan (FIFO). Staff mencentang tiap
+   baris setelah barang fisik diambil dari rak; setelah semua tercentang,
+   "Selesai Picking" mengirim seluruh alokasi ke wmsProsesOutboundFIFO
+   (transaksi atomik di Firestore — lihat module script). */
+var _pickingOrder = null;
+var _pickingAlokasi = [];   // hasil rencana FIFO, flat list semua baris dari semua item
+var _pickingChecked = {};   // {index: true}
+
+function rencanaPickingFIFO(sku, qtyDibutuhkan){
+  var entries = STATE.rackStock.filter(function(rs){ return rs.sku===sku && (rs.qty||0)>0; });
+  entries.sort(function(a,b){
+    var ea = a.tglExpired || '9999-12-31', eb = b.tglExpired || '9999-12-31';
+    return ea.localeCompare(eb);
+  });
+  var sisa = qtyDibutuhkan, alokasi = [];
+  for(var i=0;i<entries.length && sisa>0;i++){
+    var ambil = Math.min(sisa, entries[i].qty||0);
+    if(ambil<=0) continue;
+    alokasi.push({ rackStockId: entries[i].id, rakCode: entries[i].rakCode, batchCode: entries[i].batchCode||'-', tglExpired: entries[i].tglExpired||null, qty: ambil });
+    sisa -= ambil;
+  }
+  return { alokasi: alokasi, kurang: sisa };
+}
+
+// FIX: helper generik untuk pindah antar 4 step outbound (dulu cuma ada
+// toggle manual step1<->step2, ditulis ulang supaya step 3 & 4 baru bisa
+// pakai pola yang sama tanpa duplikasi kode).
+function setObStep(n){
+  for(var i=1;i<=4;i++){
+    var stepEl = document.getElementById('ob-step-'+i);
+    var pageEl = document.getElementById('outbound-step'+i);
+    if(stepEl){
+      if(i===n){ stepEl.classList.add('active'); stepEl.querySelector('.step-circle').classList.add('active'); }
+      else { stepEl.classList.remove('active'); stepEl.querySelector('.step-circle').classList.remove('active'); }
+    }
+    if(pageEl) pageEl.style.display = (i===n) ? '' : 'none';
+  }
+}
+
+function mulaiPicking(outboundId){
+  var order = STATE.outbound.find(function(o){ return o.id===outboundId; });
+  if(!order){ toast('Order tidak ditemukan (mungkin sudah diproses)','err'); return; }
+  _pickingOrder = order;
+  _pickingAlokasi = [];
+  _pickingChecked = {};
+  var totalKurang = 0;
+  (order.items||[]).forEach(function(it){
+    var rencana = rencanaPickingFIFO(it.sku, it.qty);
+    rencana.alokasi.forEach(function(a){
+      _pickingAlokasi.push({ sku:it.sku, nama:it.nama, rackStockId:a.rackStockId, rakCode:a.rakCode, batchCode:a.batchCode, tglExpired:a.tglExpired, qty:a.qty });
+    });
+    totalKurang += rencana.kurang;
+  });
+
+  setObStep(2);
+  document.getElementById('picking-order-label').textContent = 'Invoice '+(order.invoiceNo||'-')+' • Kasir: '+(order.kasir||'-');
+
+  var warnEl = document.getElementById('pick-kurang-warning');
+  if(totalKurang>0){
+    warnEl.innerHTML = '<div class="hint-txt" style="color:#FF5252;background:rgba(255,82,82,.08);border:1px solid rgba(255,82,82,.25);border-radius:10px;padding:10px 12px;margin-top:10px">⚠️ Ada '+totalKurang+' unit yang stok agregatnya tercatat cukup, tapi belum ketemu lokasi rak-nya (mungkin belum pernah di-inbound ke rak). Cek Peta Rak / lakukan Stock Opname dulu sebelum lanjut.</div>';
+  } else { warnEl.innerHTML=''; }
+
+  renderPickList();
+}
+function renderPickList(){
+  var wrap = document.getElementById('pick-list-container');
+  wrap.innerHTML = _pickingAlokasi.map(function(a, idx){
+    var checked = !!_pickingChecked[idx];
+    return '<div class="pick-row'+(checked?' checked':'')+'">'+
+      '<input type="checkbox" class="pr-check" '+(checked?'checked':'')+' onchange="togglePickRow('+idx+')">'+
+      '<div class="pr-info"><div class="pr-title">'+a.nama+' <span class="badge gray">'+a.sku+'</span></div>'+
+      '<div class="pr-meta">📍 Rak '+a.rakCode+' • Batch '+a.batchCode+' • Exp '+(a.tglExpired||'-')+'</div></div>'+
+      '<div class="pr-qty">x'+a.qty+'</div>'+
+    '</div>';
+  }).join('') || '<div style="color:#6B7280;font-size:12px">Tidak ada alokasi rak untuk order ini.</div>';
+  updatePickingProgress();
+}
+function togglePickRow(idx){
+  _pickingChecked[idx] = !_pickingChecked[idx];
+  renderPickList();
+}
+function updatePickingProgress(){
+  var total = _pickingAlokasi.length;
+  var done = Object.keys(_pickingChecked).filter(function(k){ return _pickingChecked[k]; }).length;
+  var pct = total ? Math.round(done/total*100) : 0;
+  document.getElementById('picking-progress-bar').style.width = pct+'%';
+  document.getElementById('picking-progress-text').textContent = done+' dari '+total+' baris';
+  document.getElementById('picking-progress-info').textContent = pct+'%';
+  document.getElementById('btn-selesai-picking').disabled = !(total>0 && done===total);
+}
+function batalPicking(){
+  _pickingOrder = null; _pickingAlokasi = []; _pickingChecked = {};
+  setObStep(1);
+}
+function selesaiPicking(){
+  if(!_pickingOrder) return;
+  var btn = document.getElementById('btn-selesai-picking');
+  btn.disabled = true; btn.textContent = 'Memproses...';
+  var orderSnapshot = _pickingOrder; // simpan dulu, karena _pickingOrder direset di bawah
+  window.wmsProsesOutboundFIFO(orderSnapshot.id, _pickingAlokasi, currentSession.nama).then(function(){
+    toast('✅ Picking selesai & stok terpotong! Lanjutkan ke Label Resi.');
+    _pickingOrder = null; _pickingAlokasi = []; _pickingChecked = {};
+    btn.textContent = '✅ Selesai Picking'; btn.disabled = false;
+    // FIX: dulu berhenti di sini (balik ke step 1, order langsung 'done').
+    // Sekarang lanjut otomatis ke step 3 (Label Resi) supaya outbound
+    // benar-benar berjalan sampai ke pengiriman/kurir.
+    mulaiLabelResi({ id: orderSnapshot.id, invoiceNo: orderSnapshot.invoiceNo, kasir: orderSnapshot.kasir, items: orderSnapshot.items, customerId: orderSnapshot.customerId, customer: orderSnapshot.customer, noOutbond: orderSnapshot.noOutbond });
+  }).catch(function(err){
+    toast('Gagal: '+err.message,'err');
+    btn.textContent = '✅ Selesai Picking'; btn.disabled = false;
+  });
+}
+
+/* ---------- Label Resi (Outbound STEP 3, fitur BARU) ---------- */
+var _labelOrder = null;
+
+// Sama seperti getCustomer(id) di app WMS lama (index.html): order cuma
+// simpan customerId, data lengkap (nama/perusahaan/telepon/alamat) dicari
+// realtime ke STATE.customers (collection 'customers' milik POS, lihat
+// wmsListenCustomers). Dipakai di preview step 3 & kedua dokumen cetak,
+// jadi kalau kasir membetulkan data customer di POS, label ikut update
+// tanpa perlu apa pun dari gudang.
+// Fallback ke order.customer (embedded object) HANYA untuk order lama
+// yang dibuat sebelum kontrak ini pindah ke customerId — lihat catatan
+// di posCreateOrderReserveStock (script module).
+function resolveCustomer(order){
+  if(order && order.customerId){
+    var found = STATE.customers.find(function(c){ return c.id===order.customerId; });
+    if(found) return found;
+  }
+  return (order && order.customer) || null;
+}
+
+// Update kartu Penerima read-only di step 3. Field toleran 2 penamaan
+// (perusahaan/telepon ATAU toko/hp) karena collection 'customers' milik
+// POS, bukan WMS — jadi WMS tidak mendikte skema field-nya POS.
+function renderPenerimaPreview(order){
+  var el = document.getElementById('label-penerima-preview');
+  if(!el) return; // step 3 belum/tidak sedang aktif
+  var c = resolveCustomer(order);
+  el.innerHTML = c ?
+    ('<div class="penerima-card"><div class="pc-name">'+(c.nama||'-')+'</div>'+
+      ((c.perusahaan||c.toko) ? '<div class="pc-row">'+(c.perusahaan||c.toko)+'</div>' : '')+
+      '<div class="pc-row">'+(c.telepon||c.hp||'-')+'</div>'+
+      '<div class="pc-row">'+(c.alamat||'-')+'</div></div>')
+    : '<div class="penerima-card warn"><div class="pc-name">⚠️ Data penerima belum terkirim dari POS</div>'+
+      '<div class="pc-row">Cek ulang invoice ini di POS — kalau tetap kosong, kemungkinan checkout dilakukan sebelum update POS terpasang. WMS tidak bisa diisi manual di sini.</div></div>';
+}
+
+// Standar Packing — checklist per jenis pengiriman (dalam_kota/luar_kota/
+// export), isinya diatur dari halaman Setting WMS (lihat page-setting &
+// packing_standards di script module). PACK_CHECKLIST_ITEMS_DEFAULT dipakai
+// SEKALI untuk mengisi 3 dokumen default itu kalau belum pernah dibuat, dan
+// jadi fallback kalau tipePacking order tidak/belum punya standar tersendiri.
+var PACK_CHECKLIST_ITEMS_DEFAULT = [
+  'Barang sesuai pesanan (jenis & jumlah)',
+  'Kondisi barang baik, tidak rusak/cacat',
+  'Packing aman (bubble wrap / pengganjal sesuai kebutuhan)',
+  'Dus/kemasan sesuai ukuran & tertutup rapat'
+];
+var PACKING_TIPE_LABEL = { dalam_kota:'Dalam Kota', luar_kota:'Luar Kota', export:'Export' };
+var _packChecked = {};
+var _packChecklistAktif = PACK_CHECKLIST_ITEMS_DEFAULT; // list item yang lagi dipakai di step 3, ikut order aktif
+
+// Ambil daftar item checklist sesuai tipePacking order. Fallback ke
+// checklist default kalau order tidak punya tipePacking (order lama) atau
+// standar untuk tipe itu belum sempat ke-seed di Firestore.
+function checklistItemsUntukTipe(tipePacking){
+  var std = STATE.packingStandards && STATE.packingStandards[tipePacking];
+  if(std && Array.isArray(std.items) && std.items.length) return std.items;
+  return PACK_CHECKLIST_ITEMS_DEFAULT;
+}
+
+function renderPackChecklist(){
+  var wrap = document.getElementById('pack-checklist');
+  wrap.innerHTML = _packChecklistAktif.map(function(label, idx){
+    var checked = !!_packChecked[idx];
+    return '<label class="pack-row'+(checked?' checked':'')+'">'+
+      '<input type="checkbox" '+(checked?'checked':'')+' onchange="togglePackRow('+idx+')">'+
+      '<span class="pk-label">'+label+'</span></label>';
+  }).join('');
+  updatePackChecklistState();
+}
+function togglePackRow(idx){
+  _packChecked[idx] = !_packChecked[idx];
+  renderPackChecklist();
+}
+function updatePackChecklistState(){
+  var total = _packChecklistAktif.length;
+  var done = Object.keys(_packChecked).filter(function(k){ return _packChecked[k]; }).length;
+  document.getElementById('btn-konfirmasi-label').disabled = !(done===total);
+}
+
+function mulaiLabelResi(order){
+  _labelOrder = order;
+  _packChecked = {};
+  var tipePacking = order.tipePacking || 'dalam_kota';
+  _packChecklistAktif = checklistItemsUntukTipe(tipePacking);
+  setObStep(3);
+  var labelTipe = PACKING_TIPE_LABEL[tipePacking] || tipePacking;
+  document.getElementById('label-order-info').textContent = 'Invoice '+(order.invoiceNo||'-')+' • Kasir: '+(order.kasir||'-')+' • Jenis Pengiriman: '+labelTipe;
+  document.getElementById('label-ekspedisi').value = order.ekspedisi || '';
+  document.getElementById('label-noresi').value = order.noResi || '';
+  document.getElementById('label-catatan').value = order.catatanKirim || '';
+
+  var totalBerat = (order.items||[]).reduce(function(s,it){
+    var p = STATE.products.find(function(x){ return x.sku===it.sku; });
+    return s + ((p ? p.beratGram : 0) * (it.qty||0));
+  }, 0);
+  document.getElementById('label-berat').value = order.beratGram || totalBerat || 0;
+
+  document.getElementById('label-items-preview').innerHTML = (order.items||[]).map(function(it){
+    return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>';
+  }).join('');
+
+  renderPenerimaPreview(order);
+
+  renderPackChecklist();
+}
+function batalLabelResi(){
+  _labelOrder = null;
+  setObStep(1);
+}
+/* ---------- Cetak Label Resi ----------
+   Bisa dipanggil kapan saja selama order sudah punya noResi (baik baru
+   saja dibuat, maupun lama — buat kebutuhan CETAK ULANG kalau printer
+   tadi macet/gagal). Mencari order dari STATE.outbound (belum handover)
+   ATAU STATE.handoverHistory (sudah handover), jadi tetap bisa dicetak
+   ulang walau order-nya sudah selesai. */
+function cariOrderUntukLabel(id){
+  return STATE.outbound.find(function(o){ return o.id===id; }) ||
+         (STATE.handoverHistory||[]).find(function(o){ return o.id===id; });
+}
+/* ---------- Label Cetak — SATU desain standar, 1 halaman A6 ----------
+   FIX (revisi diminta user): dulu ada 2 dokumen terpisah — "Label
+   Pengiriman" & "Resi Outbond" — beda desain, beda tombol, bikin bingung
+   staff gudang harus cetak yang mana. Sempat DIGABUNG jadi satu dokumen
+   lewat renderLabelA6(), tapi masih ada 2 tombol ("🖨️ Label" & "🧾 Resi")
+   yang mencetak dokumen identik. SEKARANG tombol "Cetak Resi" & fungsi
+   pendukungnya (cetakResiOutbond/renderPrintResiOutbond) DIHAPUS
+   SEPENUHNYA atas permintaan user — satu-satunya jalur cetak yang tersisa
+   adalah tombol "🖨️ Cetak Label" (cetakLabelOutbound), baik di antrean
+   packed, Riwayat Handover, maupun auto-print setelah simpan label resi
+   di konfirmasiLabelResi (lihat renderPrintLabel). Semua tetap memanggil
+   renderLabelA6() sehingga hasil cetak SELALU 1 dokumen yang sama: 1
+   halaman A6 berisi barcode noOutbond + pengirim + penerima + info kirim
+   + isi paket. */
+function renderLabelA6(order){
+  var pengirim = SASAGU_PENGIRIM;
+  var penerima = resolveCustomer(order);
+  var items = order.items||[];
+  var itemsHtml = items.map(function(it){
+    return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>';
+  }).join('');
+  var totalQty = items.reduce(function(s,it){ return s + (Number(it.qty)||0); }, 0);
+  var tgl = new Date().toLocaleString('id-ID');
+  // Nilai barcode: SELALU No. Outbond (nomor internal Sasagu, auto-generate
+  // atomik sejak order dibuat di POS). SENGAJA bukan No. Resi ekspedisi:
+  // No. Resi opsional & sering baru diisi staff belakangan, jadi kalau
+  // dipakai sebagai barcode, label yang dicetak sebelum resi diisi jadi
+  // tidak bisa discan. No. Outbond SELALU sudah ada dari awal, dan inilah
+  // yang dicocokkan staff gudang saat scan di STEP 4 Handover Kurir (lihat
+  // prosesHandoverLookup) — jadi 1 barcode di label = 1 kunci pencarian
+  // yang konsisten dari cetak sampai serah terima. Fallback ke invoiceNo
+  // hanya untuk order lama sebelum fitur noOutbond ada.
+  var barcodeVal = order.noOutbond || order.invoiceNo || '';
+
+  function partyBlock(label, p){
+    if(!p){
+      return '<div><div class="lbl-party-label">'+label+'</div>'+
+        '<div class="lbl-party-row" style="color:#B00;font-weight:700">Data belum terkirim dari POS</div></div>';
+    }
+    return '<div><div class="lbl-party-label">'+label+'</div>'+
+      '<div class="lbl-party-name">'+(p.nama||'-')+'</div>'+
+      ((p.perusahaan||p.toko) ? '<div class="lbl-party-row">'+(p.perusahaan||p.toko)+'</div>' : '')+
+      '<div class="lbl-party-row">'+(p.telepon||p.hp||'-')+'</div>'+
+      '<div class="lbl-party-row">'+(p.alamat||'-')+'</div>'+
+    '</div>';
+  }
+
+  document.getElementById('print-label-area').innerHTML =
+    '<div class="lbl-a6">'+
+      '<div class="lbl-head"><div class="lbl-brand">SASAGU<small>LABEL PENGIRIMAN</small></div>'+
+        '<div class="lbl-ekspedisi">'+(order.ekspedisi||'-')+'</div></div>'+
+      '<div class="lbl-barcode-wrap"><svg id="lbl-barcode-svg"></svg></div>'+
+      '<div class="lbl-meta"><span>Invoice: '+(order.invoiceNo||'-')+(order.noResi?' • Resi: '+order.noResi:'')+'</span><span>'+tgl+'</span></div>'+
+      '<div class="lbl-parties">'+partyBlock('Pengirim', pengirim)+partyBlock('Penerima', penerima)+'</div>'+
+      '<div class="lbl-info"><div class="lbl-info-col">'+
+        '<div class="lbl-info-row"><span>Jenis Kirim</span><span>'+(PACKING_TIPE_LABEL[order.tipePacking||'dalam_kota']||'-')+'</span></div>'+
+        '<div class="lbl-info-row"><span>Berat</span><span>'+(order.beratGram?(order.beratGram+' gram'):'-')+'</span></div>'+
+      '</div><div class="lbl-info-col">'+
+        '<div class="lbl-info-row"><span>Jumlah</span><span>'+(items.length||0)+' jenis / '+totalQty+' pcs</span></div>'+
+        '<div class="lbl-info-row"><span>Kasir</span><span>'+(order.kasir||'-')+'</span></div>'+
+      '</div></div>'+
+      (order.catatanKirim ? '<div class="lbl-catatan">Catatan: '+order.catatanKirim+'</div>' : '')+
+      '<div class="lbl-items"><div class="lbl-items-label">Isi Paket</div>'+itemsHtml+'</div>'+
+      '<div class="lbl-foot">Dokumen resmi gudang SASAGU</div>'+
+    '</div>';
+
+  // Gambar barcode setelah HTML ter-render, biar elemen svg-nya sudah ada di DOM.
+  if(barcodeVal && window.JsBarcode && window.__barcodeLibReady !== false){
+    try{
+      JsBarcode('#lbl-barcode-svg', barcodeVal, { format:'CODE128', displayValue:true, fontSize:11, height:44, width:1.7, margin:0 });
+    }catch(e){
+      console.error('Gagal gambar barcode label', e);
+      var svgEl = document.getElementById('lbl-barcode-svg');
+      if(svgEl) svgEl.outerHTML = '<div class="lbl-barcode-fallback">⚠️ Barcode gagal digambar — cetak ulang label ini</div>';
+    }
+  } else if(barcodeVal){
+    // Library JsBarcode gagal dimuat dari semua sumber CDN (lihat <script>
+    // loader di <head>) — TAMPILKAN PERINGATAN JELAS di label, jangan
+    // biarkan kotak barcode kosong tanpa penjelasan seperti sebelumnya.
+    var svgEl2 = document.getElementById('lbl-barcode-svg');
+    if(svgEl2) svgEl2.outerHTML = '<div class="lbl-barcode-fallback">⚠️ Barcode gagal dimuat (cek internet)<br>Kode: '+barcodeVal+'<br>Cetak ulang setelah internet tersambung</div>';
+  }
+}
+// Alias — dipertahankan supaya semua pemanggil lama (onclick di HTML,
+// dan konfirmasiLabelResi di bawah) tidak perlu diubah.
+function renderPrintLabel(order){ renderLabelA6(order); }
+function cetakLabelOutbound(id){
+  var order = cariOrderUntukLabel(id);
+  if(!order){ toast('Order tidak ditemukan untuk dicetak','err'); return; }
+  if(!order.labelAt){ toast('Order ini belum dibuatkan label resi.','err'); return; }
+  renderLabelA6(order);
+  // Kasih jeda sedikit supaya konten label sempat ke-render sebelum dialog print browser muncul.
+  setTimeout(function(){ window.print(); }, 80);
+}
+function konfirmasiLabelResi(){
+  if(!_labelOrder) return;
+  var ekspedisi = document.getElementById('label-ekspedisi').value;
+  // No. Resi (nomor tracking dari ekspedisi) SENGAJA opsional — beda dari
+  // No. Outbond yang auto-generate sistem. Resi ekspedisi sering baru
+  // didapat staff saat kurir benar-benar datang ambil paket, jadi tidak
+  // boleh menghalangi checklist Standar Packing/label resi disimpan.
+  var noResi = document.getElementById('label-noresi').value.trim();
+  var berat = document.getElementById('label-berat').value;
+  var catatan = document.getElementById('label-catatan').value;
+  if(!ekspedisi){ toast('Pilih ekspedisi terlebih dahulu!','err'); return; }
+  var totalChecklist = _packChecklistAktif.length;
+  var doneChecklist = Object.keys(_packChecked).filter(function(k){ return _packChecked[k]; }).length;
+  if(doneChecklist < totalChecklist){ toast('Lengkapi dulu Standar Packing (centang semua)','err'); return; }
+
+  var order = _labelOrder;
+  window.wmsSimpanLabelResi(order.id, { ekspedisi:ekspedisi, noResi:noResi, catatan:catatan, beratGram:berat, packingChecklist:_packChecklistAktif.slice() }, currentSession.nama).then(function(){
+    toast(noResi ? '🏷️ Label resi tersimpan, label dicetak! Tempel ke paket, lanjut Handover Kurir.' : '🏷️ Label resi tersimpan (No. Resi belum diisi), label dicetak. Lanjut Handover Kurir, resi bisa dilengkapi lewat menu Edit nanti.');
+    order.ekspedisi = ekspedisi; order.noResi = noResi; order.beratGram = berat; order.catatanKirim = catatan;
+    setObStep(4);
+    renderHandoverHistory();
+    document.getElementById('handover-result').innerHTML='';
+    document.getElementById('handover-btn-row').style.display='none';
+    var scanEl = document.getElementById('scan-handover');
+    // Auto-isi dengan noOutbond (nilai yang sama persis dengan barcode di
+    // Label Pengiriman yang baru dicetak) — bukan noResi lagi — supaya
+    // konsisten dengan apa yang staff akan scan langsung dari fisik paket.
+    var lookupVal = order.noOutbond || noResi || order.invoiceNo;
+    scanEl.value = lookupVal;
+    prosesHandoverLookup(lookupVal);
+    setTimeout(function(){ scanEl.focus(); },150);
+    // Cetak otomatis Label (barcode + pengirim SASAGU + penerima dari
+    // data customer POS + isi paket) begitu label resi tersimpan — ini
+    // satu-satunya dokumen cetak dalam alur outbound (lihat catatan di
+    // renderLabelA6: "Cetak Resi" terpisah sudah dihapus atas permintaan
+    // user, sekarang cuma ada satu tombol "Cetak Label").
+    renderPrintLabel(order);
+    setTimeout(function(){ window.print(); }, 200);
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+
+/* ---------- Handover Kurir (Outbound STEP 4, fitur BARU — penutup alur) ---------- */
+function onHandoverScan(event){
+  if(event.key!=='Enter') return;
+  var val = (document.getElementById('scan-handover').value||'').trim();
+  if(!val) return;
+  prosesHandoverLookup(val);
+}
+function prosesHandoverLookup(val){
+  var resEl = document.getElementById('handover-result');
+  // FIX: dulu cuma cocok ke noResi/invoiceNo. Sekarang Label Pengiriman
+  // dicetak dengan barcode = noOutbond (lihat renderPrintLabel), jadi hasil
+  // scan yang masuk ke sini SELALU noOutbond — noResi/invoiceNo tetap
+  // dicek juga untuk kompatibilitas mundur & kalau staff ketik manual.
+  var order = STATE.outbound.find(function(o){ return o.noOutbond===val || o.noResi===val || o.invoiceNo===val; });
+  if(!order){
+    resEl.innerHTML = '<div class="hint-txt" style="color:#FF5252;background:rgba(255,82,82,.08);border:1px solid rgba(255,82,82,.25);border-radius:10px;padding:10px 12px">❌ Resi/invoice "'+val+'" tidak ditemukan di antrean outbound (mungkin sudah handover, atau belum dibuatkan label resi).</div>';
+    document.getElementById('handover-btn-row').style.display='none';
+    return;
+  }
+  if(order.status!=='packed' || !order.labelAt){
+    resEl.innerHTML = '<div class="hint-txt" style="color:#FFB547;background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25);border-radius:10px;padding:10px 12px">⚠️ Order ini belum siap handover (status: '+order.status+(order.labelAt?'':', label resi belum dibuat')+').</div>';
+    document.getElementById('handover-btn-row').style.display='none';
+    return;
+  }
+
+  var itemsHtml = (order.items||[]).map(function(it){ return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>'; }).join('');
+  resEl.innerHTML = '<div style="background:rgba(0,229,155,.06);border:1px solid rgba(0,229,155,.2);border-radius:14px;padding:16px;margin-top:6px">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">'+
+    '<div style="font-family:monospace;font-size:18px;font-weight:800;color:#00E59B">'+(order.noResi || order.invoiceNo)+'</div></div>'+
+    '<div style="font-size:12px;color:#9CA3AF;margin:4px 0 10px">Invoice '+(order.invoiceNo||'-')+' • Ekspedisi: <strong style="color:#E8E6E0">'+(order.ekspedisi||'-')+'</strong>'+(order.beratGram?(' • '+order.beratGram+' gr'):'')+'</div>'+
+    '<div class="qi-items">'+itemsHtml+'</div></div>'+
+    '<input type="hidden" id="handover-order-id" value="'+order.id+'">';
+  document.getElementById('handover-btn-row').style.display='flex';
+}
+function konfirmasiHandoverKurir(){
+  var hidden = document.getElementById('handover-order-id');
+  if(!hidden) return;
+  var orderId = hidden.value;
+  window.wmsKonfirmasiHandover(orderId, currentSession.nama).then(function(){
+    toast('✅ Serah terima ke kurir dikonfirmasi! Outbound selesai.');
+    document.getElementById('handover-result').innerHTML='';
+    document.getElementById('scan-handover').value='';
+    document.getElementById('handover-btn-row').style.display='none';
+    _labelOrder = null;
+    renderDashboard();
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+function batalKeAntreanDariHandover(){
+  _labelOrder = null;
+  setObStep(1);
+}
+function renderHandoverHistory(){
+  var el = document.getElementById('handover-history');
+  if(!el) return;
+  var todayStr = new Date().toISOString().slice(0,10);
+  var list = (STATE.handoverHistory||[]).filter(function(o){ return (o.tglHandover||'').slice(0,10)===todayStr; })
+    .sort(function(a,b){ return new Date(b.tglHandover)-new Date(a.tglHandover); });
+  if(list.length===0){ el.innerHTML = '<div style="text-align:center;padding:20px;color:#4B5563;font-size:13px">Belum ada handover hari ini</div>'; return; }
+  el.innerHTML = '<div class="tbl-wrap"><table><thead><tr><th>Invoice</th><th>No. Resi</th><th>Ekspedisi</th><th>Waktu</th><th>Oleh</th><th></th></tr></thead><tbody>'+
+    list.map(function(o){
+      return '<tr><td>'+(o.invoiceNo||'-')+'</td><td><span class="badge gray" style="font-family:monospace">'+(o.noResi||'-')+'</span></td><td>'+(o.ekspedisi||'-')+'</td>'+
+        '<td style="font-size:12px;color:#9CA3AF">'+fmtTime(o.tglHandover)+'</td><td style="font-size:12px">'+(o.handoverBy||'-')+'</td>'+
+        '<td><button class="btn sm" onclick=\'cetakLabelOutbound('+esc(o.id)+')\'>🖨️ Label</button></td></tr>';
+    }).join('')+
+    '</tbody></table></div>';
+}
+
+/* ---------- Riwayat ---------- */
+function renderRiwayat(){
+  var tb = document.getElementById('tbl-riwayat');
+  tb.innerHTML = STATE.movements.map(function(m){
+    return '<tr><td>'+fmtTime(m.createdAt)+'</td><td>'+badgeTipe(m.type)+'</td><td>'+(m.sku||'-')+'</td><td>'+(m.nama||'-')+'</td>'+
+      '<td>'+(m.qty>0?'+':'')+m.qty+'</td><td>'+(m.rakCode||'-')+'</td><td>'+(m.source||'-')+'</td><td>'+(m.petugas||'-')+'</td></tr>';
+  }).join('') || '<tr><td colspan="8" style="text-align:center;color:#6B7280">Belum ada riwayat</td></tr>';
+}
+
+/* ---------- User ---------- */
+function renderUserTable(){
+  var tb = document.getElementById('tbl-user');
+  tb.innerHTML = WMS_ACCOUNTS.map(function(u){
+    return '<tr><td>'+u.username+'</td><td>'+u.nama+'</td><td><span class="badge blue">'+u.role+'</span></td></tr>';
+  }).join('');
+}
+
+/* ---------- Setting: Standar Packing per Jenis Pengiriman (fitur BARU) ----------
+   1 kartu per tipePacking, isinya textarea (1 baris = 1 item checklist) supaya
+   staff Kepala Gudang bisa tambah/hapus/edit item bebas tanpa perlu UI baris
+   dinamis yang rumit. Disimpan ke packing_standards/{tipe} lewat
+   wmsSavePackingStandard, lalu otomatis kepakai di Outbound STEP 3 (Label
+   Resi) begitu listener realtime STATE.packingStandards ke-update. */
+function renderPackingStandardSetting(){
+  var wrap = document.getElementById('packing-standard-editor');
+  if(!wrap) return; // halaman Setting belum aktif/di-render
+  var tipeList = Object.keys(PACKING_TIPE_LABEL);
+  wrap.innerHTML = tipeList.map(function(tipe){
+    var std = STATE.packingStandards[tipe];
+    var items = (std && Array.isArray(std.items) && std.items.length) ? std.items : PACK_CHECKLIST_ITEMS_DEFAULT;
+    var updatedInfo = std && std.updatedAt ? ('Terakhir diubah: '+fmtTime(std.updatedAt)+(std.updatedBy?(' oleh '+std.updatedBy):'')) : 'Belum pernah diubah (masih memakai checklist default)';
+    return '<div class="card" style="margin-top:14px">'+
+      '<div class="card-title-row"><h2 style="font-size:15px">'+PACKING_TIPE_LABEL[tipe]+'</h2></div>'+
+      '<div class="hint-txt" style="margin-top:0">Satu baris = satu item checklist. '+updatedInfo+'</div>'+
+      '<textarea id="pss-'+tipe+'" rows="6" style="width:100%;font-family:inherit;font-size:13px;padding:10px;border-radius:8px" placeholder="Contoh: Barang sesuai pesanan (jenis & jumlah)">'+items.join('\n')+'</textarea>'+
+      '<div class="btn-row" style="margin-top:10px">'+
+        '<button class="btn primary" onclick=\'submitPackingStandard('+esc(tipe)+')\'>💾 Simpan '+PACKING_TIPE_LABEL[tipe]+'</button>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+function submitPackingStandard(tipe){
+  var ta = document.getElementById('pss-'+tipe);
+  if(!ta) return;
+  var items = ta.value.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
+  if(items.length===0){ toast('Isi minimal 1 item checklist','err'); return; }
+  window.wmsSavePackingStandard(tipe, PACKING_TIPE_LABEL[tipe], items, currentSession?currentSession.nama:'-').then(function(){
+    toast('✅ Standar Packing '+PACKING_TIPE_LABEL[tipe]+' tersimpan');
+  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
+}
+</script>
+<!-- ===== TEMPLATE CETAK LABEL RESI (murni dokumen label, diisi JS lewat
+     renderPrintLabel() sebelum window.print() dipanggil) ===== -->
+<div id="print-label-area" class="print-only"></div>
+
+</body>
+</html>
