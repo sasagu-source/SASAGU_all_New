@@ -47,36 +47,60 @@
   const STOK_WMS_COL = collection(db, 'stock_wms');
 
   // ── Jembatan POS → WMS (outbound) ──
-  // Menulis antrean order ke collection 'outbound_queue' milik WMS (WMS
-  // sudah listen realtime ke collection ini, jadi begitu dokumen ini
-  // ditulis, WMS otomatis "dengar" tanpa perlu tombol simulasi lagi).
-  // Ditambahkan sebagai fungsi baru, TIDAK mengubah logika stokReserved
-  // lokal POS (p.stokReserved) yang sudah ada — dua-duanya tetap jalan
-  // berdampingan.
+  // Menulis antrean order ke collection 'outbound_queue' milik WMS, PERSIS
+  // pola window.posCreateOrderReserveStock yang didokumentasikan di file
+  // wms-sasagu.html (WMS sudah listen realtime ke collection ini, jadi
+  // begitu dokumen ini ditulis, WMS otomatis "dengar" tanpa perlu tombol
+  // simulasi lagi). Ditambahkan sebagai fungsi baru, TIDAK mengubah logika
+  // stokReserved lokal POS (p.stokReserved) yang sudah ada — dua-duanya
+  // tetap jalan berdampingan.
   const OUTBOUND_QUEUE_COL = collection(db, 'outbound_queue');
+  // Counter atomik No. Outbond. SENGAJA pakai path 'counters/outbond' yang
+  // SAMA PERSIS dengan yang sudah dipakai WMS (lihat refCounterOutbond &
+  // posCreateOrderReserveStock di wms-sasagu.html) — walau WMS men-generate
+  // No. Outbond lewat fungsi itu, fungsi itu TIDAK PERNAH benar-benar
+  // dipanggil dari app POS ini. Jembatan yang beneran jalan adalah
+  // posSyncOutboundToWMS di bawah, jadi generate noOutbond-nya dipindah
+  // ke sini supaya tiap order outbound TETAP dapat nomor unik dari awal.
+  const OUTBOND_COUNTER_DOC = doc(db, 'counters', 'outbond');
   // tipePacking: 'dalam_kota' | 'luar_kota' | 'export' — dipilih kasir di keranjang
   // (lihat #cart-tipe-packing). Dipakai WMS untuk menentukan checklist Standar
   // Packing mana yang harus dicentang staff gudang sebelum label resi disimpan
   // (lihat packing_standards/{tipePacking} di file wms-sasagu.html). Kalau
   // kosong/tidak dikenali, WMS fallback ke checklist default.
-  //
-  // FIX: sebelumnya fungsi ini TIDAK PERNAH mengirim customerId, padahal
-  // `cid` (id customer terpilih di keranjang) sudah tersedia di kedua
-  // pemanggil (checkoutTunai/checkoutKredit). Akibatnya WMS tidak pernah
-  // tahu siapa penerima paket dan staff gudang terpaksa isi manual. Sekarang
-  // customerId ikut dikirim & ditulis ke outbound_queue — WMS mencocokkan
-  // nilai ini ke document ID di collection 'customers' (yang sama persis
-  // dipakai _syncCollection di atas: setDoc(doc(db,'customers', String(rec.id)), rec),
-  // jadi customerId di sini HARUS id customer, bukan objek/nama).
+  // customerId: FIX — sebelumnya field ini TIDAK PERNAH dikirim ke WMS sama
+  // sekali, padahal WMS sudah baca field ini (resolveCustomer/getCustomer)
+  // untuk mengisi data Penerima di Label Pengiriman & Resi Outbond. Tanpa
+  // ini, label gudang selalu tampil "Data penerima belum terkirim dari POS".
+  // Sekarang customerId (id di collection 'customers' milik POS, sama yang
+  // dipilih kasir di #cart-customer) WAJIB dikirim tiap checkout.
   window.posSyncOutboundToWMS = async function(invoiceNo, items, kasir, tipePacking, customerId){
     // items = [{sku, nama, qty}, ...]
     const itemsWms = (items||[]).filter(it=>it && it.sku).map(it=>({ sku: it.sku, nama: it.nama, qty: Number(it.qty)||0 }));
     if(itemsWms.length===0) return; // tidak ada item dengan SKU valid, tidak ada yang bisa direservasi di WMS
+    // customerDetail: FIX — sebelumnya cuma customerId (ID referensi) yang
+    // dikirim ke WMS, bukan data customer-nya sendiri. WMS baru bisa dapat
+    // nama/alamat/hp Penerima KALAU proses resolveCustomer(customerId) di sisi
+    // WMS berhasil (butuh collection 'customers' POS ini tersinkron & ID-nya
+    // cocok). Supaya data Penerima di Label Pengiriman & Resi Outbond SELALU
+    // ada — persis sesuai data customer yang dipilih/diisi kasir di form
+    // Customer POS (#cart-customer) — detailnya sekarang ikut dikirim sebagai
+    // snapshot, tidak cuma ID-nya.
+    const _cust = (customerId && typeof window.getCustomer==='function') ? window.getCustomer(customerId) : null;
+    const customerDetail = _cust ? {
+      nama: _cust.nama||'', toko: _cust.toko||'', hp: _cust.hp||'',
+      email: _cust.email||'', alamat: _cust.alamat||'', tipe: _cust.tipe||''
+    } : null;
     try{
       await runTransaction(db, async (tx)=>{
         const stockRefs = itemsWms.map(it => doc(STOK_WMS_COL, it.sku));
         const stockSnaps = [];
         for(const ref of stockRefs) stockSnaps.push(await tx.get(ref));
+
+        // Baca counter No. Outbond DALAM transaction yang sama (read-before-
+        // write), sama pola dengan firebaseGetNextInvoiceSeq/PoSeq di atas.
+        const counterSnap = await tx.get(OUTBOND_COUNTER_DOC);
+
         for(let i=0;i<itemsWms.length;i++){
           const it = itemsWms[i];
           const cur = stockSnaps[i].exists() ? stockSnaps[i].data() : { stokFisik:0, stokReserved:0 };
@@ -87,8 +111,30 @@
             updatedAt: new Date().toISOString()
           }, { merge:true });
         }
+
+        // Generate noOutbond: format ddmmyySSnnnn (12 karakter, JAUH lebih
+        // pendek dari format lama SGU-OUT-YYYYMM-NNNN). dd/mm/yy = tanggal
+        // dibuat, SS = kode tetap Sasagu (pola sama dengan simbol 'S' di
+        // nomor nota POS — lihat generateNomor di atas), nnnn = urutan
+        // 4-digit yang RESET ke 0001 tiap ganti BULAN (bukan tiap ganti
+        // hari — dd cuma tampilan tanggal, bukan bagian dari reset counter,
+        // makanya penanda bulan/reset counter tetap pakai 'ym' yg sudah ada).
+        const now = new Date();
+        const ym = String(now.getFullYear()) + String(now.getMonth()+1).padStart(2,'0');
+        const curCounter = counterSnap.exists() ? counterSnap.data() : {};
+        const seq = (curCounter.ym === ym) ? (Number(curCounter.seq)||0) + 1 : 1;
+        const dd = String(now.getDate()).padStart(2,'0');
+        const mm = String(now.getMonth()+1).padStart(2,'0');
+        const yy = String(now.getFullYear()).slice(-2);
+        const noOutbond = dd + mm + yy + 'SS' + String(seq).padStart(4,'0');
+        tx.set(OUTBOND_COUNTER_DOC, { ym, seq }, { merge:true });
+
         const outRef = doc(OUTBOUND_QUEUE_COL);
-        tx.set(outRef, { invoiceNo, items: itemsWms, kasir: kasir||'', tipePacking: tipePacking||'dalam_kota', status:'pending', createdAt: new Date().toISOString(), customerId: customerId || null });
+        tx.set(outRef, {
+          invoiceNo, items: itemsWms, kasir: kasir||'', tipePacking: tipePacking||'dalam_kota',
+          status:'pending', createdAt: new Date().toISOString(),
+          noOutbond, customerId: customerId || null, customerDetail
+        });
       });
     } catch(err){
       // Sengaja tidak menggagalkan checkout kalau ini error (barang sudah
@@ -102,12 +148,18 @@
   // Firestore transaction menjamin baca+tulis counter terjadi ATOMIK di
   // server, jadi walau banyak device jualan di detik yang sama, tidak akan
   // pernah ada 2 invoice dengan nomor urut yang sama.
+  // FIX: counter sekarang RESET ke 1 tiap ganti bulan (dulu terus naik
+  // tanpa henti). Polanya sama persis dengan OUTBOND_COUNTER_DOC di atas:
+  // simpan juga field 'ym' (tahun+bulan) di dokumen counter, lalu bandingkan
+  // dengan bulan berjalan — kalau beda, mulai lagi dari 1.
   window.firebaseGetNextInvoiceSeq = async function(){
+    const now = new Date();
+    const ym = String(now.getFullYear()) + String(now.getMonth()+1).padStart(2,'0');
     const next = await runTransaction(db, async (t)=>{
       const snap = await t.get(INVOICE_COUNTER_DOC);
-      const current = snap.exists() ? (snap.data().seq||0) : 0;
-      const n = current + 1;
-      t.set(INVOICE_COUNTER_DOC, { seq: n, updatedAt: new Date().toISOString() });
+      const cur = snap.exists() ? snap.data() : {};
+      const n = (cur.ym === ym) ? (Number(cur.seq)||0) + 1 : 1;
+      t.set(INVOICE_COUNTER_DOC, { ym, seq: n, updatedAt: new Date().toISOString() });
       return n;
     });
     return next;
@@ -1969,48 +2021,56 @@ function toast(msg,dur=2600){
 }
 
 /* =====================================================================
-   NOMOR NOTA — Format Sasagu: YYYYMMSNNLL
-   Contoh: 202606S01AA (nota ke-1), 202606S02AA (nota ke-2), ...
-   - YYYYMM  = tahun & bulan
-   - S       = simbol Sasagu (pemisah tetap)
-   - NN      = urutan 01–99 dalam satu siklus huruf
-   - LL      = kode huruf AA→AB→AC→...→AZ→BA→... naik setiap 99 nota
+   NOMOR NOTA — Format: INVNNNNDDMMYY
+   Contoh: INV000117086 → salah, lihat contoh benar di bawah.
+   Contoh benar: INV000117 08 26 → ditulis tanpa spasi: INV0001170826
+   - INV     = kode tetap
+   - NNNN    = nomor urut 4-digit, RESET ke 0001 tiap ganti BULAN
+   - DDMMYY  = tanggal invoice dibuat (bukan bagian dari reset counter,
+               cuma penanda tanggal — penanda bulan/reset counter tetap
+               pakai 'ym' di firebaseGetNextInvoiceSeq / localFallbackInvoiceSeq)
    Berlaku sama untuk tunai maupun kredit.
+
+   Keunikan: karena NNNN reset tiap bulan TAPI DDMMYY (lewat MMYY-nya)
+   ikut berubah tiap bulan juga, kombinasi NNNN+MMYY tidak akan pernah
+   sama antar bulan — jadi nomor tetap unik walau NNNN sempat berulang
+   dari 0001 lagi. DD (tanggal) sendiri tidak dibutuhkan untuk keunikan,
+   cuma mempermudah baca. Catatan: NNNN cuma 4 digit, jadi kalau transaksi
+   tembus >9999 dalam 1 bulan nomornya akan jadi 5 digit (mis. INV10000...) —
+   secara teknis tetap unik, cuma keluar dari lebar 4-digit yang diharapkan.
 ===================================================================== */
 async function generateNomor(){
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2,'0');
+  const mm = String(now.getMonth()+1).padStart(2,'0');
+  const yy = String(now.getFullYear()).slice(-2);
+  const ym = String(now.getFullYear()) + mm;
+
   let n;
   if(typeof window.firebaseGetNextInvoiceSeq === 'function'){
     try{
       n = await window.firebaseGetNextInvoiceSeq();
     }catch(err){
       console.error('[generateNomor] Gagal ambil nomor atomik dari Firestore (mis. sedang offline), fallback ke counter lokal:', err);
-      DB._noCounter = (DB._noCounter||0)+1;
-      n = DB._noCounter;
+      n = localFallbackInvoiceSeq(ym);
     }
   } else {
-    DB._noCounter = (DB._noCounter||0)+1;
-    n = DB._noCounter;
+    n = localFallbackInvoiceSeq(ym);
   }
-  // Simpan juga sebagai referensi lokal (dipakai kalau firebaseGetNextInvoiceSeq
-  // tidak tersedia di masa depan), tapi ini BUKAN sumber kebenaran nomor lagi.
-  DB._noCounter = Math.max(DB._noCounter||0, n);
+
+  const nnnn = String(n).padStart(4,'0');
+  return `INV${nnnn}${dd}${mm}${yy}`;
+}
+
+// Fallback nomor invoice kalau Firestore tidak tersedia (offline) —
+// counter lokal ini JUGA direset tiap ganti bulan, supaya konsisten
+// dengan counter atomik di firebaseGetNextInvoiceSeq. Ini bukan sumber
+// kebenaran nomor; hanya dipakai saat firebaseGetNextInvoiceSeq gagal.
+function localFallbackInvoiceSeq(ym){
+  if(DB._noCounterYm !== ym){ DB._noCounterYm = ym; DB._noCounter = 0; }
+  DB._noCounter = (DB._noCounter||0) + 1;
   saveDB();
-  const d = new Date();
-  const ym = d.getFullYear().toString()+String(d.getMonth()+1).padStart(2,'0');
-
-  // Hitung siklus: setiap 99 nota, huruf suffix naik
-  // siklus ke-0 = AA, ke-1 = AB, dst.
-  const siklus = Math.floor((n-1)/99); // 0-based
-  const posInSiklus = ((n-1)%99)+1;    // 1–99
-
-  // Konversi siklus ke 2 huruf: 0=AA, 1=AB, ..., 25=AZ, 26=BA, ...
-  const ALPHA='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  const huruf1 = ALPHA[Math.floor(siklus/26)%26];
-  const huruf2 = ALPHA[siklus%26];
-  const suffix = huruf1+huruf2;
-
-  const nn = String(posInSiklus).padStart(2,'0');
-  return `${ym}S${nn}${suffix}`;
+  return DB._noCounter;
 }
 
 /* =====================================================================
@@ -3636,9 +3696,10 @@ function renderArsip(){
       ? (sisa<=0?'<span class="badge green">Lunas</span>':sisa<t.total?`<span class="badge amber">Cicilan</span>`:'<span class="badge red">Belum Bayar</span>')
       : '<span class="badge green">Tunai</span>';
 
-    const aksiButtons=isKredit
+    const aksiButtons=(isKredit
       ? `<button class="btn sm success" onclick="lihatDokumen('${t.id}',true)" title="Lihat & print invoice+surat jalan — hasil cetak ditandai SALINAN">📄 Lihat Invoice</button>`
-      : `<button class="btn sm" onclick="lihatDokumen('${t.id}',true)" title="Lihat & print ulang struk">🧾 Lihat Struk</button>`;
+      : `<button class="btn sm" onclick="lihatDokumen('${t.id}',true)" title="Lihat & print ulang struk">🧾 Lihat Struk</button>`)
+      + `<button class="btn sm" style="margin-top:4px" onclick="buatCsvInvoice('${t.id}')" title="Download data barang di dokumen ini sebagai CSV">📥 Buat CSV</button>`;
 
     return `<tr>
       <td style="font-size:12px;white-space:nowrap">${fmtTgl(t.tgl)}</td>
@@ -3657,6 +3718,34 @@ function renderArsip(){
       </td>
     </tr>`;
   }).join('');
+}
+
+// ── Buat CSV per-item dari 1 dokumen di Arsip Invoice ──
+// Format kolom mengikuti template CSV: no_faktur,tanggal,sumber,nama_produk,
+// sku,qty,harga_modal (tanggal format dd/mm/yyyy). "sumber" diisi nama
+// toko/customer pada transaksi tsb (kalau transaksi Umum/tanpa customer,
+// diisi "Umum"), "harga_modal" diambil dari harga modal produk saat
+// transaksi dibuat (item.modal).
+function buatCsvInvoice(trxId){
+  const t=DB.transaksi.find(x=>x.id===trxId);
+  if(!t){ if(typeof toast==='function') toast('Transaksi tidak ditemukan!'); return; }
+  const c=getCustomer(t.customerId);
+  const sumber=c?(c.toko||c.nama||'Umum'):'Umum';
+  const d=new Date(t.tgl);
+  const tanggal=String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
+  const csvEsc=(v)=>{ const s=String(v==null?'':v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const header='no_faktur,tanggal,sumber,nama_produk,sku,qty,harga_modal';
+  const rows=(t.items||[]).map(it=>[
+    csvEsc(t.id), csvEsc(tanggal), csvEsc(sumber), csvEsc(it.nama), csvEsc(it.sku||''), csvEsc(it.qty), csvEsc(it.modal||0)
+  ].join(','));
+  const csv=header+'\n'+rows.join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=`invoice_${t.id}.csv`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+  if(typeof toast==='function') toast('CSV invoice berhasil didownload!');
 }
 
 /* =====================================================================
