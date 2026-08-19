@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal Utama - SASAGU</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .dashboard {
+            background-color: #ffffff;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            text-align: center;
+            width: 100%;
+            max-width: 400px;
+        }
+        h1 {
+            color: #333333;
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        p {
+            color: #666666;
+            margin-bottom: 30px;
+        }
+        .menu-container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .btn {
+            display: block;
+            padding: 15px;
+            background-color: #0366d6;
+            color: white;
+            text-decoration: none;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px;
+            transition: background-color 0.3s ease;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard">
+        <h1>Menu Sistem SASAGU</h1>
+        <p>Silakan pilih modul yang ingin diakses</p>
+
+        <div class="menu-container">
+            <!-- Tautan langsung mengarah ke folder dan file index.html di dalamnya -->
+            <a href="POS/index.html" class="btn">Modul POS</a>
+            <a href="PRODUKSI/index.html" class="btn">Modul PRODUKSI</a>
+            <a href="WMS/index.html" class="btn">Modul WMS</a>
+        </div>
+    </div>
+
+</body>
+</html>
