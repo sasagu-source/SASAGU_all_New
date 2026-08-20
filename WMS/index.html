@@ -120,8 +120,8 @@
                                 — BUKAN oleh fungsi posCreateOrderReserveStock di bawah (fungsi
                                 itu cuma dokumentasi kontrak, tidak pernah benar-benar dipanggil
                                 POS). Inilah nilai yang dipakai sebagai barcode di Label
-                                Pengiriman & yang dicocokkan staff gudang saat scan di STEP 4
-                                Handover Kurir (lihat renderPrintLabel & prosesHandoverLookup).
+                                Pengiriman & yang dicocokkan staff gudang saat scan di halaman
+                                🚚 Serah Terima Kurir (lihat renderPrintLabel & prosesScanKurir).
                               customerId: id dokumen di collection 'customers' milik POS, dikirim
                                 POS tiap checkout (lihat posSyncOutboundToWMS). WMS TIDAK
                                 menyimpan salinan data penerima — selalu resolve realtime lewat
@@ -723,7 +723,8 @@
      administratif pengiriman (ekspedisi, no. resi, berat, catatan) ke
      dokumen outbound_queue yang sudah ada — TIDAK menyentuh stok lagi,
      karena stok sudah dipotong tuntas di wmsProsesOutboundFIFO. Status
-     TETAP 'packed' sampai handover dikonfirmasi (STEP 4). */
+     TETAP 'packed' sampai handover dikonfirmasi di halaman terpisah
+     🚚 Serah Terima Kurir (lihat wmsKonfirmasiHandover). */
   window.wmsSimpanLabelResi = async function(outboundDocId, data, petugas){
     const outRef = doc(colOutbound, outboundDocId);
     const outSnap = await getDoc(outRef);
@@ -748,7 +749,8 @@
     });
   };
 
-  /* ---------- Konfirmasi Handover ke Kurir (Outbound STEP 4, fitur BARU) ----
+  /* ---------- Konfirmasi Handover ke Kurir (dipanggil dari halaman
+     terpisah 🚚 Serah Terima Kurir, page-kurir — lihat prosesScanKurir) ----
      Langkah TERAKHIR alur outbound — baru di sinilah status jadi 'done'.
      Transaction dipakai supaya 2 staff yang scan resi sama nyaris bersamaan
      tidak bisa dobel-konfirmasi handover yang sama. */
@@ -1040,7 +1042,8 @@ tr:hover td{background:#141720}
   <span class="brand"><span class="dot"></span> WMS <span>SASAGU</span></span>
   <span id="user-chip"></span>
   <button class="active" onclick="gotoPage('dashboard',this)">📊 Dashboard</button>
-  <button onclick="gotoPage('outbound',this)">📦 Outbound<span id="badge-outbound" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
+  <button onclick="gotoPage('outbound',this)">📦 Ambil &amp; Kemas<span id="badge-outbound" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
+  <button onclick="gotoPage('kurir',this)">🚚 Serah Terima Kurir<span id="badge-kurir" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
   <button onclick="gotoPage('inbound',this)">📥 Inbound<span id="badge-inbound" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
   <button onclick="gotoPage('rak',this)">🗄️ Peta Rak</button>
   <button onclick="gotoPage('stok',this)">📋 Produk &amp; Stok</button>
@@ -1079,20 +1082,14 @@ tr:hover td{background:#141720}
     <div class="step" id="ob-step-2"><div class="step-circle">2</div><div class="step-label">Picking FIFO</div></div>
     <div class="step-line"></div>
     <div class="step" id="ob-step-3"><div class="step-circle">3</div><div class="step-label">Label Resi</div></div>
-    <div class="step-line"></div>
-    <div class="step" id="ob-step-4"><div class="step-circle">4</div><div class="step-label">Handover Kurir</div></div>
   </div>
 
-  <!-- Riwayat Handover — SENGAJA ditaruh di luar step1-4 (bukan di-nest
-       dalam outbound-step4 lagi) supaya selalu terlihat di halaman Outbound,
-       apa pun step yang lagi aktif. Sebelumnya nempel di dalam step4 yang
-       display:none default, jadi baru muncul kalau lagi proses handover
-       order tertentu — bikin serasa "hilang". Tombol cetak ulang di sini
-       juga jadi selalu bisa diakses tanpa harus scan resi dulu. -->
-  <div class="card" style="margin-bottom:16px">
-    <h2>📋 Riwayat Handover Hari Ini</h2>
-    <div id="handover-history"></div>
-  </div>
+  <!-- CATATAN: alur "Ambil & Kemas" (dulu bernama "Outbound") SENGAJA
+       berhenti di Step 3 — cetak Label Pengiriman. Proses serah terima
+       fisik ke kurir ekspedisi (scan out) dipisah jadi menu tersendiri
+       "🚚 Serah Terima Kurir" (lihat page-kurir) karena dikerjakan staff
+       yang berbeda dari staff Ambil & Kemas. Riwayat Handover juga pindah
+       ke halaman itu. -->
 
   <!-- STEP 1: Pilih Order -->
   <div id="outbound-step1">
@@ -1150,7 +1147,7 @@ tr:hover td{background:#141720}
           <div style="font-size:12px;color:#9CA3AF;margin-top:2px" id="label-order-info"></div>
         </div>
       </div>
-      <div class="hint-txt">Stok sudah terpotong &amp; barang sudah diambil dari rak. Lengkapi data pengiriman di bawah, centang Standar Packing, lalu klik <b>Simpan &amp; Cetak Label</b> — label (barcode, pengirim SASAGU, penerima, isi paket) langsung tersimpan &amp; tercetak.</div>
+      <div class="hint-txt">Stok sudah terpotong &amp; barang sudah diambil dari rak. Lengkapi data pengiriman di bawah, centang Standar Packing, lalu klik <b>Simpan &amp; Cetak Label</b> — label (barcode, pengirim SASAGU, penerima, isi paket) langsung tersimpan &amp; tercetak. Paket lalu tinggal ditaruh di area kirim; proses serah terima ke kurir dilakukan staff lain lewat menu <b>🚚 Serah Terima Kurir</b>.</div>
 
       <div class="section-title">📇 Penerima <span style="font-weight:400;color:#6B7280;font-size:11px">(otomatis dari invoice POS — tidak perlu diketik ulang)</span></div>
       <div id="label-penerima-preview" style="margin-bottom:14px"></div>
@@ -1202,24 +1199,38 @@ tr:hover td{background:#141720}
     </div>
   </div>
 
-  <!-- STEP 4: Handover Kurir (fitur BARU — penutup alur outbound) -->
-  <div id="outbound-step4" style="display:none">
-    <div class="card">
-      <h2>🚚 Handover ke Kurir — Scan/Input Resi</h2>
-      <div class="hint-txt">Setelah paket dipacking &amp; resi ditempel, scan barcode resi atau ketik nomor resi/invoice untuk memverifikasi serah terima ke kurir.</div>
 
-      <div class="scan-box" style="margin:14px 0">
-        <span class="scan-icon">📱</span>
-        <input id="scan-handover" placeholder="Scan atau ketik nomor resi / invoice..." onkeydown="onHandoverScan(event)">
-      </div>
+</div>
 
-      <div id="handover-result"></div>
+<!-- ============ SERAH TERIMA KURIR (fitur BARU — dipisah dari Ambil & Kemas,
+     dikerjakan staff yang beda: staff scan-out yang menyerahkan paket ke
+     kurir ekspedisi). Alur: scan/ketik nomor barcode label (No. Outbond)
+     / No. Resi / Invoice → Enter → langsung diproses (tanpa tombol
+     konfirmasi tambahan, biar staff bisa scan cepat berurutan):
+       - Belum pernah discan & valid (siap handover)  -> tandai selesai
+         di Firestore + suarakan NAMA EKSPEDISI-nya lewat suara (TTS).
+       - Sudah pernah discan sebelumnya                -> suarakan "Double",
+         TIDAK diproses ulang.
+       - Kode tidak ditemukan / belum dibuatkan label  -> suara+pesan error.
+     ============ -->
+<div id="page-kurir" class="page">
+  <div class="card">
+    <h2>🚚 Serah Terima Kurir — Scan Out</h2>
+    <div class="hint-txt">Scan barcode di Label Pengiriman (atau ketik No. Resi/Invoice) setiap paket yang benar-benar diserahkan ke kurir ekspedisi. Sistem otomatis <b>menyebutkan nama ekspedisi lewat suara</b> kalau paket valid &amp; baru pertama kali discan, atau bilang <b>"Double"</b> kalau paket ini sudah pernah diserahkan/discan sebelumnya. Pastikan volume/suara perangkat menyala.</div>
 
-      <div class="btn-row" id="handover-btn-row" style="display:none">
-        <button class="btn" onclick="batalKeAntreanDariHandover()">← Kembali ke Antrean</button>
-        <button class="btn primary" onclick="konfirmasiHandoverKurir()">✅ Konfirmasi Serah Terima Kurir</button>
-      </div>
+    <div class="scan-box" style="margin:14px 0">
+      <span class="scan-icon">📱</span>
+      <input id="scan-kurir" placeholder="Scan atau ketik nomor label / resi / invoice, lalu Enter..." autocomplete="off" onkeydown="onScanKurirInput(event)">
     </div>
+
+    <div id="scan-kurir-result"></div>
+  </div>
+
+  <!-- Riwayat Handover — pindah dari halaman Ambil & Kemas ke sini karena
+       sekarang inilah halaman tempat serah terima kurir benar-benar terjadi. -->
+  <div class="card" style="margin-top:16px">
+    <h2>📋 Riwayat Serah Terima Hari Ini</h2>
+    <div id="handover-history"></div>
   </div>
 </div>
 
@@ -1577,9 +1588,14 @@ function renderDashboard(){
   document.getElementById('m-antrean-out').textContent = STATE.outbound.length;
   document.getElementById('m-antrean-in').textContent = STATE.inbound.length;
 
-  var bIn = document.getElementById('badge-inbound'), bOut = document.getElementById('badge-outbound');
+  var bIn = document.getElementById('badge-inbound'), bOut = document.getElementById('badge-outbound'), bKurir = document.getElementById('badge-kurir');
   bIn.style.display = STATE.inbound.length ? 'inline-block':'none'; bIn.textContent = STATE.inbound.length;
   bOut.style.display = STATE.outbound.length ? 'inline-block':'none'; bOut.textContent = STATE.outbound.length;
+  // Badge menu Serah Terima Kurir = jumlah paket yang SUDAH dilabel & siap
+  // diserahkan ke kurir (status 'packed' + labelAt terisi) — beda dari
+  // badge-outbound yang menghitung SEMUA antrean (termasuk yang belum dipicking/dilabel).
+  var siapKurir = STATE.outbound.filter(function(o){ return o.status==='packed' && o.labelAt; }).length;
+  bKurir.style.display = siapKurir ? 'inline-block':'none'; bKurir.textContent = siapKurir;
 
   var tb = document.getElementById('tbl-aktivitas-terbaru');
   tb.innerHTML = STATE.movements.slice(0,10).map(function(m){
@@ -2023,13 +2039,13 @@ function renderOutboundList(){
       var itemsHtml = (o.items||[]).map(function(it){ return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>'; }).join('');
       var sudahLabel = !!o.labelAt;
       var statusLabelTxt = sudahLabel
-        ? ((o.noResi ? ('Resi '+o.noResi+' ('+(o.ekspedisi||'-')+')') : 'Label resi tersimpan, No. Resi ekspedisi belum diisi')+' — siap handover')
+        ? ((o.noResi ? ('Resi '+o.noResi+' ('+(o.ekspedisi||'-')+')') : 'Label resi tersimpan, No. Resi ekspedisi belum diisi')+' — siap diserahkan ke kurir (menu 🚚 Serah Terima Kurir)')
         : 'Belum dibuatkan label resi';
       return '<div class="queue-item"><div class="qi-top"><div><div class="qi-title">Invoice '+(o.invoiceNo||'-')+'</div>'+
         '<div class="qi-meta">Kasir: '+(o.kasir||'-')+' • '+packingBadge(o)+' • '+statusLabelTxt+(resolveCustomer(o)?'':' • <span style="color:#FFB547">penerima belum terkirim dari POS</span>')+'</div></div>'+
         '<div style="display:flex;gap:6px;flex-wrap:wrap">'+
         (sudahLabel ? '<button class="btn sm" onclick=\'cetakLabelOutbound('+esc(o.id)+')\'>🖨️ Cetak Ulang Label</button>' : '')+
-        '<button class="btn primary sm" onclick=\'lanjutkanOutboundPacked('+esc(o.id)+')\'>'+(sudahLabel?'🚚 Lanjut ke Handover':'🏷️ Buat Label Resi')+' →</button></div></div>'+
+        '<button class="btn primary sm" onclick=\'lanjutkanOutboundPacked('+esc(o.id)+')\'>'+(sudahLabel?'✏️ Edit Label Resi':'🏷️ Buat Label Resi')+' →</button></div></div>'+
         '<div class="qi-items">'+itemsHtml+'</div></div>';
     }).join('');
   } else {
@@ -2040,18 +2056,13 @@ function renderOutboundList(){
 function lanjutkanOutboundPacked(id){
   var order = STATE.outbound.find(function(o){ return o.id===id; });
   if(!order){ toast('Order tidak ditemukan','err'); return; }
-  if(order.labelAt){
-    setObStep(4);
-    renderHandoverHistory();
-    document.getElementById('handover-result').innerHTML='';
-    document.getElementById('handover-btn-row').style.display='none';
-    var scanEl = document.getElementById('scan-handover');
-    var lookupVal = order.noResi || order.invoiceNo;
-    scanEl.value = lookupVal;
-    prosesHandoverLookup(lookupVal);
-  } else {
-    mulaiLabelResi(order);
-  }
+  // FIX: dulu kalau order.labelAt sudah ada, tombol ini lompat ke Step 4
+  // Handover Kurir. Sekarang Handover Kurir sudah jadi halaman terpisah
+  // (page-kurir, dikerjakan staff beda), jadi di sini tombol ini SELALU
+  // buka Step 3 — kalau label sudah pernah dibuat, form otomatis terisi
+  // data sebelumnya (lihat mulaiLabelResi) supaya bisa dikoreksi/dibuat
+  // ulang sebelum diserahkan ke kurir.
+  mulaiLabelResi(order);
 }
 function prosesBatalOutbound(id){
   var alasan = prompt('Alasan pembatalan?','Invoice dibatalkan customer');
@@ -2088,11 +2099,13 @@ function rencanaPickingFIFO(sku, qtyDibutuhkan){
   return { alokasi: alokasi, kurang: sisa };
 }
 
-// FIX: helper generik untuk pindah antar 4 step outbound (dulu cuma ada
-// toggle manual step1<->step2, ditulis ulang supaya step 3 & 4 baru bisa
-// pakai pola yang sama tanpa duplikasi kode).
+// FIX: helper generik untuk pindah antar step Ambil & Kemas (dulu cuma ada
+// toggle manual step1<->step2, ditulis ulang supaya step 3 baru bisa pakai
+// pola yang sama tanpa duplikasi kode). Step 4 (Handover Kurir) sudah
+// dipindah jadi halaman terpisah "Serah Terima Kurir" (page-kurir), jadi
+// di sini cukup 3 step.
 function setObStep(n){
-  for(var i=1;i<=4;i++){
+  for(var i=1;i<=3;i++){
     var stepEl = document.getElementById('ob-step-'+i);
     var pageEl = document.getElementById('outbound-step'+i);
     if(stepEl){
@@ -2325,8 +2338,8 @@ function renderLabelA6(order){
   // No. Resi opsional & sering baru diisi staff belakangan, jadi kalau
   // dipakai sebagai barcode, label yang dicetak sebelum resi diisi jadi
   // tidak bisa discan. No. Outbond SELALU sudah ada dari awal, dan inilah
-  // yang dicocokkan staff gudang saat scan di STEP 4 Handover Kurir (lihat
-  // prosesHandoverLookup) — jadi 1 barcode di label = 1 kunci pencarian
+  // yang dicocokkan staff gudang saat scan di halaman 🚚 Serah Terima Kurir
+  // (lihat prosesScanKurir) — jadi 1 barcode di label = 1 kunci pencarian
   // yang konsisten dari cetak sampai serah terima. Fallback ke invoiceNo
   // hanya untuk order lama sebelum fitur noOutbond ada.
   var barcodeVal = order.noOutbond || order.invoiceNo || '';
@@ -2408,80 +2421,114 @@ function konfirmasiLabelResi(){
 
   var order = _labelOrder;
   window.wmsSimpanLabelResi(order.id, { ekspedisi:ekspedisi, noResi:noResi, catatan:catatan, beratGram:berat, packingChecklist:_packChecklistAktif.slice() }, currentSession.nama).then(function(){
-    toast(noResi ? '🏷️ Label resi tersimpan, label dicetak! Tempel ke paket, lanjut Handover Kurir.' : '🏷️ Label resi tersimpan (No. Resi belum diisi), label dicetak. Lanjut Handover Kurir, resi bisa dilengkapi lewat menu Edit nanti.');
+    toast('🏷️ Label resi tersimpan, label dicetak! Tempel ke paket, lalu taruh di area kirim — serah terima ke kurir diproses lewat menu 🚚 Serah Terima Kurir.');
     order.ekspedisi = ekspedisi; order.noResi = noResi; order.beratGram = berat; order.catatanKirim = catatan;
-    setObStep(4);
-    renderHandoverHistory();
-    document.getElementById('handover-result').innerHTML='';
-    document.getElementById('handover-btn-row').style.display='none';
-    var scanEl = document.getElementById('scan-handover');
-    // Auto-isi dengan noOutbond (nilai yang sama persis dengan barcode di
-    // Label Pengiriman yang baru dicetak) — bukan noResi lagi — supaya
-    // konsisten dengan apa yang staff akan scan langsung dari fisik paket.
-    var lookupVal = order.noOutbond || noResi || order.invoiceNo;
-    scanEl.value = lookupVal;
-    prosesHandoverLookup(lookupVal);
-    setTimeout(function(){ scanEl.focus(); },150);
+    // FIX: alur "Ambil & Kemas" SENGAJA berhenti di sini (cetak label),
+    // TIDAK lagi lompat ke step Handover Kurir — itu sekarang halaman
+    // terpisah (page-kurir) yang dikerjakan staff lain. Balik ke Step 1
+    // supaya antrean & daftar "Sudah Dipicking" ter-refresh.
+    _labelOrder = null;
+    setObStep(1);
     // Cetak otomatis Label (barcode + pengirim SASAGU + penerima dari
     // data customer POS + isi paket) begitu label resi tersimpan — ini
-    // satu-satunya dokumen cetak dalam alur outbound (lihat catatan di
-    // renderLabelA6: "Cetak Resi" terpisah sudah dihapus atas permintaan
-    // user, sekarang cuma ada satu tombol "Cetak Label").
+    // satu-satunya dokumen cetak dalam alur Ambil & Kemas (lihat catatan
+    // di renderLabelA6: "Cetak Resi" terpisah sudah dihapus atas
+    // permintaan user, sekarang cuma ada satu tombol "Cetak Label").
     renderPrintLabel(order);
     setTimeout(function(){ window.print(); }, 200);
   }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
 }
 
-/* ---------- Handover Kurir (Outbound STEP 4, fitur BARU — penutup alur) ---------- */
-function onHandoverScan(event){
+/* ---------- Serah Terima Kurir (fitur BARU, halaman terpisah page-kurir) ----
+   Staff scan-out (beda dari staff Ambil & Kemas) scan barcode di Label
+   Pengiriman (nilainya = noOutbond, lihat renderLabelA6) atau ketik
+   No. Resi/Invoice, tekan Enter, dan sistem LANGSUNG memproses (tanpa
+   tombol konfirmasi tambahan — dirancang buat scan cepat berturut-turut):
+     - Belum pernah discan & valid  -> tandai 'done' di Firestore lewat
+       wmsKonfirmasiHandover (transaksi atomik, sama seperti sebelumnya)
+       + suarakan NAMA EKSPEDISI-nya via TTS.
+     - Sudah pernah discan/handover -> suarakan "Double", TIDAK diproses
+       ulang. Dicek 2 lapis: dari STATE.handoverHistory (cache lokal,
+       instan) DAN dari respons error wmsKonfirmasiHandover kalau ternyata
+       baru saja di-handover staff/scanner lain (race condition, transaksi
+       Firestore yang jadi sumber kebenaran akhir).
+     - Kode tidak ketemu / belum dibuatkan label -> suara+pesan error beda,
+       biar staff tahu itu bukan sekadar "double" tapi memang belum siap. */
+function speakText(text){
+  try{
+    if(!('speechSynthesis' in window) || !text) return;
+    window.speechSynthesis.cancel(); // stop antrean ucapan sebelumnya biar tidak numpuk pas scan cepat berturut-turut
+    var u = new SpeechSynthesisUtterance(text);
+    u.lang = 'id-ID';
+    u.rate = 1;
+    window.speechSynthesis.speak(u);
+  }catch(e){ console.error('TTS gagal', e); }
+}
+function onScanKurirInput(event){
   if(event.key!=='Enter') return;
-  var val = (document.getElementById('scan-handover').value||'').trim();
+  var el = document.getElementById('scan-kurir');
+  var val = (el.value||'').trim();
+  el.value = '';
   if(!val) return;
-  prosesHandoverLookup(val);
+  prosesScanKurir(val);
 }
-function prosesHandoverLookup(val){
-  var resEl = document.getElementById('handover-result');
-  // FIX: dulu cuma cocok ke noResi/invoiceNo. Sekarang Label Pengiriman
-  // dicetak dengan barcode = noOutbond (lihat renderPrintLabel), jadi hasil
-  // scan yang masuk ke sini SELALU noOutbond — noResi/invoiceNo tetap
-  // dicek juga untuk kompatibilitas mundur & kalau staff ketik manual.
-  var order = STATE.outbound.find(function(o){ return o.noOutbond===val || o.noResi===val || o.invoiceNo===val; });
-  if(!order){
-    resEl.innerHTML = '<div class="hint-txt" style="color:#FF5252;background:rgba(255,82,82,.08);border:1px solid rgba(255,82,82,.25);border-radius:10px;padding:10px 12px">❌ Resi/invoice "'+val+'" tidak ditemukan di antrean outbound (mungkin sudah handover, atau belum dibuatkan label resi).</div>';
-    document.getElementById('handover-btn-row').style.display='none';
+function tampilkanHasilScanKurir(html){
+  document.getElementById('scan-kurir-result').innerHTML = html;
+}
+function prosesScanKurir(val){
+  var scanEl = document.getElementById('scan-kurir');
+  // 1) Cek dulu ke riwayat yang SUDAH handover (cache lokal, instan) —
+  //    kalau ketemu di sini, ini jelas scan dobel, tidak perlu ke server.
+  var sudahDone = (STATE.handoverHistory||[]).find(function(o){ return o.noOutbond===val || o.noResi===val || o.invoiceNo===val; });
+  if(sudahDone){
+    speakText('Double');
+    tampilkanHasilScanKurir(
+      '<div style="background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.3);border-radius:14px;padding:16px;margin-top:6px">'+
+      '<div style="font-size:20px;font-weight:800;color:#FFB547">🔁 DOUBLE — "'+val+'"</div>'+
+      '<div style="font-size:12px;color:#9CA3AF;margin-top:6px">Paket ini sudah pernah diserahkan ke kurir sebelumnya. Invoice '+(sudahDone.invoiceNo||'-')+' • Ekspedisi: '+(sudahDone.ekspedisi||'-')+' • oleh '+(sudahDone.handoverBy||'-')+' • '+fmtTime(sudahDone.tglHandover)+'</div></div>'
+    );
+    setTimeout(function(){ scanEl.focus(); }, 50);
     return;
   }
-  if(order.status!=='packed' || !order.labelAt){
-    resEl.innerHTML = '<div class="hint-txt" style="color:#FFB547;background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.25);border-radius:10px;padding:10px 12px">⚠️ Order ini belum siap handover (status: '+order.status+(order.labelAt?'':', label resi belum dibuat')+').</div>';
-    document.getElementById('handover-btn-row').style.display='none';
+  // 2) Cari di antrean yang siap diserahkan (sudah dipicking & dilabel, belum handover).
+  var order = STATE.outbound.find(function(o){ return (o.noOutbond===val || o.noResi===val || o.invoiceNo===val) && o.status==='packed'; });
+  if(!order || !order.labelAt){
+    speakText('Kode tidak ditemukan');
+    tampilkanHasilScanKurir(
+      '<div style="background:rgba(255,82,82,.08);border:1px solid rgba(255,82,82,.25);border-radius:14px;padding:16px;margin-top:6px">'+
+      '<div style="font-size:20px;font-weight:800;color:#FF5252">❌ Tidak ditemukan — "'+val+'"</div>'+
+      '<div style="font-size:12px;color:#9CA3AF;margin-top:6px">Kode tidak cocok dengan paket manapun yang siap diserahkan. Cek lagi nomornya, atau pastikan label resi sudah dibuat di menu 📦 Ambil &amp; Kemas.</div></div>'
+    );
+    setTimeout(function(){ scanEl.focus(); }, 50);
     return;
   }
-
-  var itemsHtml = (order.items||[]).map(function(it){ return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>'; }).join('');
-  resEl.innerHTML = '<div style="background:rgba(0,229,155,.06);border:1px solid rgba(0,229,155,.2);border-radius:14px;padding:16px;margin-top:6px">'+
-    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">'+
-    '<div style="font-family:monospace;font-size:18px;font-weight:800;color:#00E59B">'+(order.noResi || order.invoiceNo)+'</div></div>'+
-    '<div style="font-size:12px;color:#9CA3AF;margin:4px 0 10px">Invoice '+(order.invoiceNo||'-')+' • Ekspedisi: <strong style="color:#E8E6E0">'+(order.ekspedisi||'-')+'</strong>'+(order.beratGram?(' • '+order.beratGram+' gr'):'')+'</div>'+
-    '<div class="qi-items">'+itemsHtml+'</div></div>'+
-    '<input type="hidden" id="handover-order-id" value="'+order.id+'">';
-  document.getElementById('handover-btn-row').style.display='flex';
-}
-function konfirmasiHandoverKurir(){
-  var hidden = document.getElementById('handover-order-id');
-  if(!hidden) return;
-  var orderId = hidden.value;
-  window.wmsKonfirmasiHandover(orderId, currentSession.nama).then(function(){
-    toast('✅ Serah terima ke kurir dikonfirmasi! Outbound selesai.');
-    document.getElementById('handover-result').innerHTML='';
-    document.getElementById('scan-handover').value='';
-    document.getElementById('handover-btn-row').style.display='none';
-    _labelOrder = null;
-    renderDashboard();
-  }).catch(function(err){ toast('Gagal: '+err.message,'err'); });
-}
-function batalKeAntreanDariHandover(){
-  _labelOrder = null;
-  setObStep(1);
+  window.wmsKonfirmasiHandover(order.id, currentSession.nama).then(function(){
+    var namaEkspedisi = order.ekspedisi || 'Ekspedisi tidak diketahui';
+    speakText(namaEkspedisi);
+    var itemsHtml = (order.items||[]).map(function(it){ return '<div><span>'+it.nama+' ('+it.sku+')</span><span>x'+it.qty+'</span></div>'; }).join('');
+    tampilkanHasilScanKurir(
+      '<div style="background:rgba(0,229,155,.06);border:1px solid rgba(0,229,155,.2);border-radius:14px;padding:16px;margin-top:6px">'+
+      '<div style="font-size:22px;font-weight:800;color:#00E59B">✅ '+namaEkspedisi+'</div>'+
+      '<div style="font-size:12px;color:#9CA3AF;margin:4px 0 10px">Invoice '+(order.invoiceNo||'-')+(order.noResi?(' • Resi '+order.noResi):'')+(order.beratGram?(' • '+order.beratGram+' gr'):'')+'</div>'+
+      '<div class="qi-items">'+itemsHtml+'</div></div>'
+    );
+  }).catch(function(err){
+    // Race condition: order ini ternyata baru saja di-handover barusan
+    // (mis. discan 2x cepat, atau staff/scanner lain lebih dulu) — transaksi
+    // Firestore di wmsKonfirmasiHandover yang jadi sumber kebenaran akhir.
+    if(String(err.message||'').indexOf('sudah pernah')>=0){
+      speakText('Double');
+      tampilkanHasilScanKurir(
+        '<div style="background:rgba(255,181,71,.08);border:1px solid rgba(255,181,71,.3);border-radius:14px;padding:16px;margin-top:6px">'+
+        '<div style="font-size:20px;font-weight:800;color:#FFB547">🔁 DOUBLE — "'+val+'"</div>'+
+        '<div style="font-size:12px;color:#9CA3AF;margin-top:6px">Paket ini baru saja diserahkan (kemungkinan terscan 2x atau diproses staff lain hampir bersamaan).</div></div>'
+      );
+    } else {
+      toast('Gagal: '+err.message,'err');
+    }
+  }).finally(function(){
+    setTimeout(function(){ scanEl.focus(); }, 50);
+  });
 }
 function renderHandoverHistory(){
   var el = document.getElementById('handover-history');
