@@ -1043,7 +1043,7 @@ tr:hover td{background:#141720}
   <span id="user-chip"></span>
   <button class="active" onclick="gotoPage('dashboard',this)">📊 Dashboard</button>
   <button onclick="gotoPage('outbound',this)">📦 Ambil &amp; Kemas<span id="badge-outbound" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
-  <button onclick="gotoPage('kurir',this)">🚚 Serah Terima Kurir<span id="badge-kurir" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
+  <button onclick="gotoPage('kurir',this)">🚚 Scan Out / Serah Terima Kurir<span id="badge-kurir" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
   <button onclick="gotoPage('inbound',this)">📥 Inbound<span id="badge-inbound" style="display:none;background:#FF5252;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px"></span></button>
   <button onclick="gotoPage('rak',this)">🗄️ Peta Rak</button>
   <button onclick="gotoPage('stok',this)">📋 Produk &amp; Stok</button>
@@ -1215,7 +1215,7 @@ tr:hover td{background:#141720}
      ============ -->
 <div id="page-kurir" class="page">
   <div class="card">
-    <h2>🚚 Serah Terima Kurir — Scan Out</h2>
+    <h2>🚚 Scan Out (Serah Terima Kurir)</h2>
     <div class="hint-txt">Scan barcode di Label Pengiriman (atau ketik No. Resi/Invoice) setiap paket yang benar-benar diserahkan ke kurir ekspedisi. Sistem otomatis <b>menyebutkan nama ekspedisi lewat suara</b> kalau paket valid &amp; baru pertama kali discan, atau bilang <b>"Double"</b> kalau paket ini sudah pernah diserahkan/discan sebelumnya. Pastikan volume/suara perangkat menyala.</div>
 
     <div class="scan-box" style="margin:14px 0">
@@ -1452,8 +1452,8 @@ var WMS_ACCOUNTS = [
 ];
 var WMS_ROLES = ['Kepala Gudang','Staff Gudang'];
 var ALLOWED_PAGES = {
-  'Kepala Gudang': ['dashboard','outbound','inbound','rak','stok','riwayat','user','setting'],
-  'Staff Gudang':  ['dashboard','outbound','inbound','rak','stok','riwayat']
+  'Kepala Gudang': ['dashboard','outbound','kurir','inbound','rak','stok','riwayat','user','setting'],
+  'Staff Gudang':  ['dashboard','outbound','kurir','inbound','rak','stok','riwayat']
 };
 var currentSession = null;
 
