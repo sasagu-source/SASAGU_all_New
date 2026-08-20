@@ -782,7 +782,7 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
 <!-- BAHAN BAKU -->
 <div class="page" id="page-bahan">
   <div class="toolbar">
-    <button class="btn primary" id="btn-add-bahan" onclick="openModal('modal-bahan')"><i class="ti ti-plus" aria-hidden="true"></i>Tambah bahan</button>
+    <button class="btn primary" id="btn-add-bahan" onclick="clearBahanForm();genKode();openModal('modal-bahan')"><i class="ti ti-plus" aria-hidden="true"></i>Tambah bahan</button>
     <input class="search" placeholder="Cari kode atau nama…" id="bahan-search" oninput="renderBahan()">
   </div>
 
@@ -1542,9 +1542,17 @@ var bentukLabel={B:'Bubuk',C:'Cair',P:'Padat',M:'Minyak',G:'Granul/Biji',E:'Ekst
 
 function genKode(){
   var bentuk=document.getElementById('mb-bentuk').value;
-  var existing=bahanData.filter(function(b){return b.bentuk===bentuk});
-  var num=existing.length+1;
-  document.getElementById('mb-kode').value=bentuk+'-'+String(num).padStart(3,'0');
+  /* PERBAIKAN: sebelumnya num=existing.length+1 — kalau ada kode yang
+     pernah dihapus di tengah urutan, ini bisa menghasilkan kode yang
+     bentrok dengan kode yang masih ada. Sekarang cari nomor urut
+     TERTINGGI yang sudah dipakai untuk bentuk ini lalu +1 (self-healing,
+     pola sama seperti genKodeBatch di Tahap 3). */
+  var maxNum=0;
+  bahanData.filter(function(b){return b.bentuk===bentuk}).forEach(function(b){
+    var n=parseInt((b.kode||'').split('-')[1],10);
+    if(!isNaN(n) && n>maxNum) maxNum=n;
+  });
+  document.getElementById('mb-kode').value=bentuk+'-'+String(maxNum+1).padStart(3,'0');
 }
 
 function renderBahan(){
