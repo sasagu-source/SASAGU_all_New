@@ -11009,7 +11009,7 @@ setInterval(boot,900);
 (function(){
   'use strict';
   var LS='sgc_thermal_print_settings_v1';
-  var defaults={width:'58',printerName:'',autoPrint:true,transport:'auto',bridgeUrl:'http://localhost:9100'};
+  var defaults={width:'58',printerName:'',printerAddress:'',autoPrint:true,transport:'auto',bridgeUrl:'http://localhost:9100'};
   function load(){try{return Object.assign({},defaults,JSON.parse(localStorage.getItem(LS)||'{}'));}catch(e){return Object.assign({},defaults);}}
   function save(v){try{localStorage.setItem(LS,JSON.stringify(v));}catch(e){}}
   window.SgcThermal={settings:load()};
@@ -11034,20 +11034,22 @@ setInterval(boot,900);
   }
   function cleanText(v){return String(v==null?'':v).replace(/[\u0000-\u001f\u007f]/g,' ').trim();}
   function bridgePayload(data){
-    var blocks=[]; blocks.push({type:'text',text:'SASAGU',align:'center',bold:true,size:'large'});
-    blocks.push({type:'text',text:cleanText(data.title||'LABEL PRODUKSI'),align:'center',bold:true});
-    if(data.subtitle)blocks.push({type:'text',text:cleanText(data.subtitle),align:'center'});
-    blocks.push({type:'divider'});
-    (data.rows||[]).forEach(function(r){blocks.push({type:'row',left:cleanText(r[0]),right:cleanText(r[1]||'—')});});
+    var width=(window.SgcThermal.settings||defaults).width==='80'?80:58;
+    var blocks=[];
+    blocks.push({type:'text',text:'SASAGU',align:'center',bold:true,size:2});
+    blocks.push({type:'text',text:cleanText(data.title||'LABEL PRODUKSI'),align:'center',bold:true,size:1});
+    if(data.subtitle)blocks.push({type:'text',text:cleanText(data.subtitle),align:'center',size:1});
+    blocks.push({type:'line'});
+    (data.rows||[]).forEach(function(r){
+      blocks.push({type:'row',left:cleanText(r[0]),right:cleanText(r[1]||'-')});
+    });
     (data.barcodes||[]).filter(Boolean).forEach(function(c,i){
-      /* ESC/POS bridges yang mendukung barcode menerima blok barcode.
-         Bila bridge tidak mengenal blok ini, browser fallback tetap tersedia. */
-      blocks.push({type:'text',text:cleanText((data.barcodeLabels&&data.barcodeLabels[i])||'BARCODE'),align:'center',bold:true});
-      blocks.push({type:'barcode',data:cleanText(c),format:'CODE39',height:60,width:2,align:'center',hri:true});
-      blocks.push({type:'text',text:cleanText(c),align:'center'});
+      blocks.push({type:'text',text:cleanText((data.barcodeLabels&&data.barcodeLabels[i])||'BARCODE'),align:'center',bold:true,size:1});
+      blocks.push({type:'barcode',data:cleanText(c),format:'CODE39',height:55,width:2,align:'center',hri:true});
+      blocks.push({type:'text',text:cleanText(c),align:'center',size:1});
     });
     blocks.push({type:'feed',lines:3});
-    return {cut:true,content:blocks};
+    return {printerAddress:cleanText((window.SgcThermal.settings||defaults).printerAddress||''),width:width,cut:true,content:blocks};
   }
   async function bridgePrint(data){
     var h=await bridgeHealth(); if(!h)return {ok:false,reason:'bridge-unavailable'};
@@ -11123,7 +11125,7 @@ setInterval(boot,900);
     win.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Label Thermal</title><style>'+ 
       '@page{size:'+w+' auto;margin:0}'+
       '*{box-sizing:border-box}body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif}'+
-      '.sgc-th-label{width:'+w+';padding:3mm 2.5mm 2mm;margin:0 auto;font-size:10px;overflow:hidden}'+
+      '.sgc-th-label{width:'+w+';padding:2.5mm 2.2mm 2mm;margin:0 auto;font-size:10px;overflow:hidden;line-height:1.25}.sgc-th-label *{max-width:100%}'+
       '.sgc-th-brand{text-align:center;font-weight:900;font-size:15px;letter-spacing:2px}.sgc-th-title{text-align:center;font-size:11px;font-weight:800;letter-spacing:.8px;margin-top:1mm}.sgc-th-sub{text-align:center;font-size:8px;color:#555;margin-top:1mm}.sgc-th-data{margin-top:2mm;border-top:1px dashed #777}.sgc-th-row{display:flex;justify-content:space-between;gap:5px;padding:1.2mm 0;border-bottom:1px dotted #bbb;line-height:1.25}.sgc-th-row span{color:#555}.sgc-th-row strong{text-align:right;max-width:65%;word-break:break-word}.sgc-th-codes{margin-top:2mm}.sgc-th-code-title{text-align:center;font-size:8px;font-weight:800;letter-spacing:1px;margin:1.5mm 0 .5mm}.sgc-th-barcode{text-align:center;font-family:monospace;font-size:8px;letter-spacing:1px;overflow:hidden}.sgc-th-barcode svg{display:block;width:100%;height:auto;max-height:18mm;margin:0 auto .5mm}.sgc-th-footer{text-align:center;font-size:7px;color:#777;margin-top:2mm;border-top:1px dashed #aaa;padding-top:1mm}'+
       '@media print{html,body{width:'+w+';margin:0;padding:0}.sgc-th-label{width:'+w+';page-break-inside:avoid}}'+
       '</style></head><body>'+html+(s.autoPrint!==false?'<script>window.onload=function(){setTimeout(function(){window.print();},250);window.onafterprint=function(){window.close();};};<\\/script>':'')+'</body></html>');
@@ -11149,12 +11151,12 @@ setInterval(boot,900);
   window.SgcThermal.openSettings=function(){
     var s=window.SgcThermal.settings;
     var el=document.getElementById('sgc-thermal-width');if(el)el.value=s.width;
-    var pn=document.getElementById('sgc-thermal-printer');if(pn)pn.value=s.printerName||'';
+    var pn=document.getElementById('sgc-thermal-printer');if(pn)pn.value=s.printerName||'';var pa=document.getElementById('sgc-thermal-printer-address');if(pa)pa.value=s.printerAddress||'';
     var ap=document.getElementById('sgc-thermal-auto');if(ap)ap.checked=s.autoPrint!==false;var tr=document.getElementById('sgc-thermal-transport');if(tr)tr.value=s.transport||'auto';var bu=document.getElementById('sgc-thermal-bridge');if(bu)bu.value=s.bridgeUrl||'http://localhost:9100';updatePrinterStatus();
     if(typeof openModal==='function')openModal('modal-thermal-settings');
   };
   window.SgcThermal.saveSettings=function(){
-    var s={width:(document.getElementById('sgc-thermal-width')||{}).value||'58',printerName:(document.getElementById('sgc-thermal-printer')||{}).value||'',autoPrint:!!((document.getElementById('sgc-thermal-auto')||{}).checked),transport:(document.getElementById('sgc-thermal-transport')||{}).value||'auto',bridgeUrl:(document.getElementById('sgc-thermal-bridge')||{}).value||'http://localhost:9100'};
+    var s={width:(document.getElementById('sgc-thermal-width')||{}).value||'58',printerName:(document.getElementById('sgc-thermal-printer')||{}).value||'',printerAddress:(document.getElementById('sgc-thermal-printer-address')||{}).value||'',autoPrint:!!((document.getElementById('sgc-thermal-auto')||{}).checked),transport:(document.getElementById('sgc-thermal-transport')||{}).value||'auto',bridgeUrl:(document.getElementById('sgc-thermal-bridge')||{}).value||'http://localhost:9100'};
     window.SgcThermal.settings=s;save(s);closeModal('modal-thermal-settings');
     alert('Pengaturan printer thermal tersimpan. Ukuran label: '+s.width+' mm.');
   };
@@ -11203,7 +11205,7 @@ setInterval(boot,900);
       if(rb)rb.insertAdjacentHTML('beforebegin','<button class="nav-item" id="nav-thermal-settings" onclick="SgcThermal.openSettings()"><i class="ti ti-printer"></i>Printer Label</button>');
     }
     if(!document.getElementById('modal-thermal-settings')){
-      document.body.insertAdjacentHTML('beforeend','<div class="overlay" id="modal-thermal-settings"><div class="modal" style="max-width:460px"><div class="mhead"><h3>Pengaturan Printer Label</h3><button class="icn-btn" onclick="closeModal(\'modal-thermal-settings\')"><i class="ti ti-x"></i></button></div><div class="mbody"><div class="field"><label>Ukuran label thermal</label><select id="sgc-thermal-width"><option value="58">58 mm</option><option value="80">80 mm</option></select></div><div class="field"><label>Nama / identitas printer</label><input id="sgc-thermal-printer" placeholder="Contoh: Thermal Dapur 1"></div><div class="field"><label>Mode koneksi</label><select id="sgc-thermal-transport"><option value="auto">Otomatis: Bridge → BLE → Browser</option><option value="bridge">Android Bridge — Bluetooth Classic / SPP</option><option value="ble">Bluetooth BLE langsung</option><option value="browser">Browser / window.print()</option></select></div><div class="field"><label>Alamat Android Print Bridge</label><input id="sgc-thermal-bridge" value="http://localhost:9100" placeholder="http://localhost:9100"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Dipakai untuk printer Bluetooth Classic ESC/POS seperti banyak Kassen/Xprinter/HOIN. Printer dipasangkan di Android, lalu bridge mengirim ESC/POS ke printer.</div></div><div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px"><button class="btn sm" onclick="SgcThermal.connectBluetooth()"><i class="ti ti-bluetooth"></i>Hubungkan Bluetooth BLE</button><button class="btn sm" onclick="SgcThermal.testConnection()"><i class="ti ti-plug-connected"></i>Test Koneksi</button></div><div style="margin-top:8px;font-size:10px">Status BLE: <span id="sgc-thermal-status"><span class="badge b-gray">Belum terhubung</span></span> · Bridge: <span id="sgc-thermal-bridge-status">Memeriksa…</span></div><label style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:8px"><input id="sgc-thermal-auto" type="checkbox" checked style="width:14px;height:14px"> Browser print otomatis jika mode Browser dipilih</label><div class="alert-box warn" style="margin-top:12px"><i class="ti ti-info-circle"></i><div><strong>PC tetap memakai window.print().</strong> Untuk HP, printer Bluetooth Classic umumnya membutuhkan Android print bridge; BLE tertentu bisa langsung dari Chrome Android. Tidak semua perangkat Bluetooth expose protokol ESC/POS yang sama.</div></div></div><div class="mfoot"><button class="btn" onclick="SgcThermal.testPrint()"><i class="ti ti-printer"></i>Test Print</button><button class="btn primary" onclick="SgcThermal.saveSettings()">Simpan Pengaturan</button></div></div></div>');
+      document.body.insertAdjacentHTML('beforeend','<div class="overlay" id="modal-thermal-settings"><div class="modal" style="max-width:460px"><div class="mhead"><h3>Pengaturan Printer Label</h3><button class="icn-btn" onclick="closeModal(\'modal-thermal-settings\')"><i class="ti ti-x"></i></button></div><div class="mbody"><div class="field"><label>Ukuran label thermal</label><select id="sgc-thermal-width"><option value="58">58 mm</option><option value="80">80 mm</option></select></div><div class="field"><label>Nama / identitas printer</label><input id="sgc-thermal-printer" placeholder="Contoh: Thermal Dapur 1"></div><div class="field"><label>Alamat Bluetooth printer</label><input id="sgc-thermal-printer-address" placeholder="Contoh: 00:11:22:33:44:55"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Diisi otomatis/manual dari daftar printer yang sudah dipair di Android Bridge.</div></div><div class="field"><label>Mode koneksi</label><select id="sgc-thermal-transport"><option value="auto">Otomatis: Bridge → BLE → Browser</option><option value="bridge">Android Bridge — Bluetooth Classic / SPP</option><option value="ble">Bluetooth BLE langsung</option><option value="browser">Browser / window.print()</option></select></div><div class="field"><label>Alamat Android Print Bridge</label><input id="sgc-thermal-bridge" value="http://localhost:9100" placeholder="http://localhost:9100"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Dipakai untuk printer Bluetooth Classic ESC/POS seperti banyak Kassen/Xprinter/HOIN. Printer dipasangkan di Android, lalu bridge mengirim ESC/POS ke printer.</div></div><div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px"><button class="btn sm" onclick="SgcThermal.connectBluetooth()"><i class="ti ti-bluetooth"></i>Hubungkan Bluetooth BLE</button><button class="btn sm" onclick="SgcThermal.testConnection()"><i class="ti ti-plug-connected"></i>Test Koneksi</button></div><div style="margin-top:8px;font-size:10px">Status BLE: <span id="sgc-thermal-status"><span class="badge b-gray">Belum terhubung</span></span> · Bridge: <span id="sgc-thermal-bridge-status">Memeriksa…</span></div><label style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:8px"><input id="sgc-thermal-auto" type="checkbox" checked style="width:14px;height:14px"> Browser print otomatis jika mode Browser dipilih</label><div class="alert-box warn" style="margin-top:12px"><i class="ti ti-info-circle"></i><div><strong>PC tetap memakai window.print().</strong> Untuk HP, printer Bluetooth Classic umumnya membutuhkan Android print bridge; BLE tertentu bisa langsung dari Chrome Android. Tidak semua perangkat Bluetooth expose protokol ESC/POS yang sama.</div></div></div><div class="mfoot"><button class="btn" onclick="SgcThermal.testPrint()"><i class="ti ti-printer"></i>Test Print</button><button class="btn primary" onclick="SgcThermal.saveSettings()">Simpan Pengaturan</button></div></div></div>');
     }
     if(!document.getElementById('modal-trace'))document.body.insertAdjacentHTML('beforeend','<div class="overlay" id="modal-trace"><div class="modal" style="max-width:520px"><div class="mhead"><h3>Traceability Produksi</h3><button class="icn-btn" onclick="closeModal(\'modal-trace\')"><i class="ti ti-x"></i></button></div><div class="mbody"><div id="sgc-trace-content"></div></div><div class="mfoot"><button class="btn" onclick="closeModal(\'modal-trace\')">Tutup</button></div></div></div>');
   }
