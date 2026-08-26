@@ -8,7 +8,7 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --brand:#C8783C;--brand-light:#FDF3EA;--brand-mid:#F0C49A;--brand-dark:#7A4520;
+  --brand:#166534;--brand-light:#E8F5E9;--brand-mid:#A5D6A7;--brand-dark:#0F4D28;
   --green:#2E7D32;--green-light:#E8F5E9;--red:#C62828;--red-light:#FFEBEE;
   --amber:#E65100;--amber-light:#FFF3E0;--blue:#1565C0;--blue-light:#E3F2FD;
   --nav:#1C1C1A;--nav-text:#E8E4DC;
@@ -1060,8 +1060,9 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
         <div class="field"><label>Satuan yield</label><select id="mr-yield-sat"><option value="gr">gr</option><option value="kg">kg</option><option value="pcs">pcs</option></select></div>
       </div>
       <div class="field"><label>Catatan produksi</label><textarea id="mr-catatan" placeholder="Suhu oven, waktu, tips…"></textarea></div>
+      <div class="field"><label>Masa simpan Premix (hari)</label><input id="mr-premix-shelf-life" type="number" min="1" step="1" placeholder="Contoh: 7"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Expired Premix akan dihitung otomatis saat produksi selesai.</div></div>
       <div class="sec-label">Komposisi bahan (resep asli)</div>
-      <div class="ing-hdr"><span>Bahan</span><span>Jumlah</span><span>Satuan</span><span>Biaya</span><span></span></div>
+      <div class="ing-hdr"><span>Bahan</span><span>Jumlah</span><span>Satuan</span><span>Kode Premix</span><span>Biaya</span><span></span></div>
       <div id="mr-ing-list"></div>
       <button class="btn sm" onclick="addIng()"><i class="ti ti-plus" aria-hidden="true"></i>Tambah bahan</button>
       <div class="hpp-preview" style="margin-top:10px">
@@ -1789,6 +1790,116 @@ var T4_JENIS_LIST=[
    sudah diketik tidak hilang saat wrap-nya di-render ulang ketika checkbox Tahap 4 diubah. */
 var _t4KemasPerJenisState={};
 
+function premixCodeList(){return 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');}
+
+/* ─────────────────────────────────────────────────────────────────────
+   PRODUCTION WORK INSTRUCTION — langkah kerja terstruktur
+   Non-destructive: instruksi lama tetap disimpan dan tetap menjadi fallback.
+   Format: steps:[{id,type,title,instruction,durationMin,required}]
+   ───────────────────────────────────────────────────────────────────── */
+var PWI_STEP_TYPES=[
+  {key:'bahan',label:'Bahan',icon:'ti-package'},
+  {key:'proses',label:'Proses',icon:'ti-settings'},
+  {key:'timer',label:'Proses + Timer',icon:'ti-clock'},
+  {key:'qc',label:'QC / Pemeriksaan',icon:'ti-checklist'},
+  {key:'catatan',label:'Catatan / Peringatan',icon:'ti-alert-triangle'}
+];
+function pwiDefaultStep(){return {id:'s'+Date.now()+Math.random().toString(36).slice(2,7),type:'proses',title:'',instruction:'',durationMin:0,required:true};}
+function pwiSteps(data){return Array.isArray(data&&data.steps)?data.steps:[];}
+function pwiTypeLabel(key){var x=PWI_STEP_TYPES.find(function(t){return t.key===key;});return x?x.label:'Proses';}
+function pwiTypeIcon(key){var x=PWI_STEP_TYPES.find(function(t){return t.key===key;});return x?x.icon:'ti-settings';}
+function pwiStepEditor(step,i){
+  step=step||pwiDefaultStep();
+  var dur=parseInt(step.durationMin,10)||0;
+  return '<div class="sgc-pwi-step" data-pwi-index="'+i+'" style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;background:#fff">'+
+    '<div style="display:flex;align-items:center;gap:7px;padding:8px 10px;background:var(--surface-1);border-bottom:1px solid var(--border)">'+
+      '<span class="sgc-pwi-num" style="font-size:11px;font-weight:800;min-width:24px;color:var(--brand)">Langkah '+(i+1)+'</span>'+
+      '<select class="sgc-pwi-type" style="font-size:10px;padding:4px 6px" title="Jenis langkah">'+PWI_STEP_TYPES.map(function(t){return '<option value="'+t.key+'" '+(step.type===t.key?'selected':'')+'>'+t.label+'</option>';}).join('')+'</select>'+
+      '<button type="button" class="btn sm" onclick="pwiMoveStep(this,-1)" title="Naik">↑</button>'+
+      '<button type="button" class="btn sm" onclick="pwiMoveStep(this,1)" title="Turun">↓</button>'+
+      '<button type="button" class="del-btn" onclick="pwiRemoveStep(this)" title="Hapus langkah">×</button>'+
+    '</div>'+
+    '<div style="padding:9px 10px">'+
+      '<div class="field" style="margin-bottom:7px"><label style="font-size:10px">Judul langkah</label><input class="sgc-pwi-title" value="'+escHtml(step.title||'')+'" placeholder="Contoh: Masukkan bahan A ke mixer" style="font-size:11px"></div>'+
+      '<div class="field" style="margin-bottom:7px"><label style="font-size:10px">Instruksi kerja</label><textarea class="sgc-pwi-instruction" style="width:100%;min-height:58px;padding:7px 9px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical" placeholder="Tulis tindakan yang harus dilakukan staff...">'+escHtml(step.instruction||'')+'</textarea></div>'+
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
+        '<label style="display:flex;align-items:center;gap:5px;font-size:10px"><input type="checkbox" class="sgc-pwi-required" '+(step.required!==false?'checked':'')+'> Wajib diselesaikan</label>'+
+        '<label class="sgc-pwi-duration-wrap" style="display:'+(step.type==='timer'?'flex':'none')+';align-items:center;gap:5px;font-size:10px">Durasi <input type="number" class="sgc-pwi-duration" min="1" max="1440" value="'+(dur||'')+'" placeholder="5" style="width:70px;font-size:10px"> menit</label>'+
+      '</div>'+
+    '</div>'+
+  '</div>';
+}
+function getPwiStepsFromForm(key){
+  var out=[];document.querySelectorAll('#tahap-block-'+key+' .sgc-pwi-step').forEach(function(el,i){
+    var type=(el.querySelector('.sgc-pwi-type')||{}).value||'proses';
+    var title=(el.querySelector('.sgc-pwi-title')||{}).value||'';
+    var instruction=(el.querySelector('.sgc-pwi-instruction')||{}).value||'';
+    var required=!!(el.querySelector('.sgc-pwi-required')||{}).checked;
+    var duration=parseInt((el.querySelector('.sgc-pwi-duration')||{}).value,10)||0;
+    if(title.trim()||instruction.trim()) out.push({id:el.dataset.pwiId||('s'+(i+1)),type:type,title:title.trim(),instruction:instruction.trim(),durationMin:duration,required:required});
+  });
+  return out;
+}
+function pwiRenderEditor(key,steps){
+  var wrap=document.getElementById('pwi-list-'+key);if(!wrap)return;
+  wrap.innerHTML=(steps&&steps.length?steps.map(pwiStepEditor).join(''):'<div class="sgc-pwi-empty" style="padding:8px 0;color:var(--text-muted);font-size:10px">Belum ada langkah. Tambahkan langkah kerja agar staff dipandu satu per satu.</div>')+
+    '<button type="button" class="btn sm" onclick="pwiAddStep(\''+key+'\')"><i class="ti ti-plus"></i>Tambah Langkah</button>';
+}
+function pwiAddStep(key){
+  var steps=getPwiStepsFromForm(key);steps.push(pwiDefaultStep());pwiRenderEditor(key,steps);
+}
+function pwiRemoveStep(btn){var key=btn.closest('.tahap-block').id.replace('tahap-block-','');var steps=getPwiStepsFromForm(key);var i=parseInt(btn.closest('.sgc-pwi-step').dataset.pwiIndex||'0',10);steps.splice(i,1);pwiRenderEditor(key,steps);}
+function pwiMoveStep(btn,dir){var key=btn.closest('.tahap-block').id.replace('tahap-block-','');var steps=getPwiStepsFromForm(key);var i=parseInt(btn.closest('.sgc-pwi-step').dataset.pwiIndex||'0',10),j=i+dir;if(j<0||j>=steps.length)return;var x=steps[i];steps[i]=steps[j];steps[j]=x;pwiRenderEditor(key,steps);}
+function pwiBindEditor(){
+  document.querySelectorAll('.sgc-pwi-type').forEach(function(sel){sel.addEventListener('change',function(){var wrap=sel.closest('.sgc-pwi-step').querySelector('.sgc-pwi-duration-wrap');if(wrap)wrap.style.display=sel.value==='timer'?'flex':'none';});});
+}
+function buildPremixEditor(tut){
+  var p=tut&&tut.premix?tut.premix:{};
+  var groups=Array.isArray(p.groups)?p.groups:[];
+  var html='<div class="sgc-premix-editor">'+
+    '<div style="font-size:11px;font-weight:600;color:var(--brand-dark);margin-bottom:7px">Kelompok Premix per Kode</div>'+
+    '<div style="font-size:10px;color:var(--text-muted);margin-bottom:8px">Pilih kode A, B, C... pada setiap bahan di atas. Tambahkan kelompok untuk memberi nama wadah dan instruksi kerja.</div>';
+  if(groups.length){groups.forEach(function(g,i){html+=premixGroupEditor(g,i);});}
+  html+='<button type="button" class="btn sm" onclick="addPremixGroup()"><i class="ti ti-plus"></i>Tambah Kode Premix</button>'+
+    '<div class="sgc-pwi-editor" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">'+
+      '<div style="font-size:11px;font-weight:600;color:var(--brand-dark);margin-bottom:5px">Langkah Kerja Staff</div>'+
+      '<div style="font-size:10px;color:var(--text-muted);line-height:1.5;margin-bottom:8px">Selain kelompok bahan A/B/C, susun juga urutan tindakan yang harus dilakukan staff.</div>'+
+      '<div id="pwi-list-premix">'+(pwiSteps(p).length?pwiSteps(p).map(pwiStepEditor).join(''):'<div class="sgc-pwi-empty" style="padding:8px 0;color:var(--text-muted);font-size:10px">Belum ada langkah kerja.</div>')+
+      '</div><button type="button" class="btn sm" onclick="pwiAddStep(\'premix\')"><i class="ti ti-plus"></i>Tambah Langkah</button>'+
+    '</div></div>';
+  return html;
+}
+function premixGroupEditor(g,i){
+  g=g||{}; var code=g.code||premixCodeList()[i]||'';
+  return '<div class="sgc-premix-group" data-premix-index="'+i+'">'+
+    '<div class="sgc-premix-group-head"><span class="sgc-premix-code">Kode '+code+'</span><input class="sgc-pg-code" value="'+(g.code||code)+'" maxlength="1" style="width:42px;text-align:center;text-transform:uppercase" title="Kode" onchange="refreshPremixEditor()">'+
+    '<input class="sgc-pg-name" value="'+escHtml(g.name||'')+'" placeholder="Nama kelompok / wadah" style="flex:1">'+
+    '<button type="button" class="del-btn" onclick="this.closest(\'.sgc-premix-group\').remove();refreshPremixEditor()">×</button></div>'+
+    '<div class="sgc-premix-group-body"><label style="font-size:10px;color:var(--text-muted)">Instruksi kelompok</label><textarea class="sgc-pg-instruksi" style="width:100%;min-height:58px;margin-top:4px;padding:7px 9px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical" placeholder="Contoh: Campur semua bahan kering kecuali garam.">'+escHtml(g.instruksi||'')+'</textarea></div></div>';
+}
+function getPremixGroupsFromForm(){
+  var out=[];document.querySelectorAll('#tahap-block-premix .sgc-premix-group').forEach(function(el){
+    var code=(el.querySelector('.sgc-pg-code')||{}).value||'';
+    var name=(el.querySelector('.sgc-pg-name')||{}).value||'';
+    var instr=(el.querySelector('.sgc-pg-instruksi')||{}).value||'';
+    code=code.trim().toUpperCase().slice(0,1); if(code||name.trim()||instr.trim()) out.push({code:code,name:name.trim(),instruksi:instr.trim()});
+  }); return out;
+}
+function renderPremixEditorContent(groups,steps){
+  var wrap=document.querySelector('#tahap-block-premix .sgc-premix-editor'); if(!wrap)return;
+  groups=groups||[];steps=steps||[];
+  wrap.innerHTML='<div style="font-size:11px;font-weight:600;color:var(--brand-dark);margin-bottom:7px">Kelompok Premix per Kode</div><div style="font-size:10px;color:var(--text-muted);margin-bottom:8px">Pilih kode A, B, C... pada setiap bahan di atas. Tambahkan kelompok untuk memberi nama wadah dan instruksi kerja.</div>'+groups.map(premixGroupEditor).join('')+'<button type="button" class="btn sm" onclick="addPremixGroup()"><i class="ti ti-plus"></i>Tambah Kode Premix</button>'+
+    '<div class="sgc-pwi-editor" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)"><div style="font-size:11px;font-weight:600;color:var(--brand-dark);margin-bottom:5px">Langkah Kerja Staff</div><div style="font-size:10px;color:var(--text-muted);line-height:1.5;margin-bottom:8px">Selain kelompok bahan A/B/C, susun juga urutan tindakan yang harus dilakukan staff.</div><div id="pwi-list-premix">'+(steps.length?steps.map(pwiStepEditor).join(''):'<div class="sgc-pwi-empty" style="padding:8px 0;color:var(--text-muted);font-size:10px">Belum ada langkah kerja.</div>')+'</div><button type="button" class="btn sm" onclick="pwiAddStep(\'premix\')"><i class="ti ti-plus"></i>Tambah Langkah</button></div>';
+  pwiBindEditor();
+}
+function refreshPremixEditor(){
+  var groups=getPremixGroupsFromForm(); var steps=getPwiStepsFromForm('premix'); renderPremixEditorContent(groups,steps);
+}
+function addPremixGroup(){
+  var groups=getPremixGroupsFromForm(); var steps=getPwiStepsFromForm('premix'); groups.push({code:premixCodeList()[groups.length]||'',name:'',instruksi:''}); renderPremixEditorContent(groups,steps);
+}
+function escHtml(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
 function buildTahapForm(tut){
   var html='';
   /* Reset buffer instruksi pengemasan-per-jenis setiap kali form dibangun ulang (buka modal baru/edit) */
@@ -1806,22 +1917,27 @@ function buildTahapForm(tut){
     var expExtra='';
     if(t.key==='simpan'){
       expExtra='<div id="t4-jenis-penyimpanan-wrap" style="margin-top:10px;padding:10px;background:#FFF3E0;border-radius:6px;border:.5px solid #FFCC80">'+
-        '<div style="font-size:10px;font-weight:600;color:#E65100;margin-bottom:8px"><i class="ti ti-thermometer"></i> Jenis Penyimpanan (boleh pilih lebih dari satu)</div>';
+        '<div style="font-size:10px;font-weight:600;color:#E65100;margin-bottom:5px"><i class="ti ti-thermometer"></i> Jenis Penyimpanan & Masa Simpan</div>'+        '<div style="font-size:9px;color:#7A4E00;line-height:1.5;margin-bottom:9px">Masa simpan di bawah menjadi dasar expired yang dibawa sampai Tahap 5 Pengemasan. <strong>Produk Intermediate</strong> mulai dihitung sejak Premix selesai. <strong>Produk Ready to Eat</strong> mulai dihitung sejak Panggang selesai.</div>';
       T4_JENIS_LIST.forEach(function(j){
-        var jd=_tutSimpanJenis[j.key]||{aktif:false,keterangan:''};
+        var jd=_tutSimpanJenis[j.key]||{aktif:false,keterangan:'',masaSimpanHari:0};
         expExtra+='<div style="margin-bottom:8px">'+
           '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;font-weight:500">'+
             '<input type="checkbox" id="t4jp-cb-'+j.key+'" '+(jd.aktif?'checked':'')+' onchange="toggleT4JenisPenyimpanan(\''+j.key+'\')">'+
             '<i class="ti '+j.icon+'"></i> '+j.label+
           '</label>'+
-          '<textarea id="t4jp-ket-'+j.key+'" style="width:100%;min-height:50px;margin-top:5px;padding:6px 8px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical;display:'+(jd.aktif?'block':'none')+'" placeholder="Keterangan detail perlakuan penyimpanan '+j.label+'…">'+(jd.keterangan||'')+'</textarea>'+
+          '<div id="t4jp-extra-'+j.key+'" style="display:'+(jd.aktif?'block':'none')+'">'+
+            '<div class="field" style="margin-top:6px"><label style="font-size:10px">Masa simpan di '+j.label+' (hari)</label><input type="number" id="t4jp-exp-'+j.key+'" min="1" step="1" value="'+(parseInt(jd.masaSimpanHari,10)||'')+'" placeholder="Contoh: 7" style="font-size:11px"><div style="font-size:9px;color:var(--text-muted);margin-top:3px">Dihitung otomatis dari titik produksi: selesai Premix (Intermediate) atau selesai Panggang (Ready to Eat).</div></div>'+
+            '<textarea id="t4jp-ket-'+j.key+'" style="width:100%;min-height:50px;margin-top:5px;padding:6px 8px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical" placeholder="Keterangan detail perlakuan penyimpanan '+j.label+'…">'+(jd.keterangan||'')+'</textarea>'+
+          '</div>'+
         '</div>';
       });
       expExtra+='</div>';
     }
     if(t.key==='kemas'){
-      expExtra='<div style="font-size:10px;color:var(--text-muted);margin-top:8px 0 4px">Instruksi tambahan di bawah otomatis mengikuti jenis penyimpanan yang dicentang di Tahap 4:</div>'+
-        '<div id="tahap-kemas-perjenis-wrap" style="margin-top:6px"></div>';
+      expExtra='<div style="margin-top:10px;padding:10px;background:#F3E5F5;border-radius:6px;border:.5px solid #CE93D8">'+
+        '<div style="font-size:10px;font-weight:700;color:#6A1B9A;margin-bottom:5px"><i class="ti ti-calendar-time"></i> Expired Produk pada Kemasan — otomatis dari Tahap 4</div>'+
+        '<div style="font-size:10px;color:var(--text-muted);line-height:1.5">Tanggal expired <strong>tidak diatur lagi di Tahap 5</strong>. Saat staff memilih batch penyimpanan di Tahap 4, sistem membawa expired sesuai jenis penyimpanan (Suhu Ruang / Chiller / Freezer) sampai ke kemasan.</div>'+
+      '</div>'+      '<div style="font-size:10px;color:var(--text-muted);margin:8px 0 4px">Instruksi tambahan di bawah otomatis mengikuti jenis penyimpanan yang dicentang di Tahap 4:</div>'+      '<div id="tahap-kemas-perjenis-wrap" style="margin-top:6px"></div>';
     }
     if(t.key==='dough'){
       var ec=tut&&tut.expiredDough?tut.expiredDough:{suhuRuang:24,chiller:72,freezer:2160};
@@ -1856,12 +1972,27 @@ function buildTahapForm(tut){
       '</div>'+
       '<div id="tahap-body-'+t.key+'" style="padding:10px 12px">'+
         '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px">'+t.hint+' Centang &ldquo;Aktif&rdquo; di atas agar tahap ini ditampilkan di halaman Mulai Produksi.</div>'+
-        '<textarea id="tahap-isi-'+t.key+'" style="width:100%;min-height:80px;padding:7px 9px;border:.5px solid var(--border-strong);border-radius:6px;font-size:12px;font-family:inherit;resize:vertical" placeholder="'+t.hint+'">'+(data.instruksi||'')+'</textarea>'+
+        (t.key==='premix'?buildPremixEditor(tut):
+          '<div class="sgc-pwi-editor">'+
+            '<div style="font-size:11px;font-weight:600;color:var(--brand-dark);margin-bottom:5px">Langkah Kerja Staff</div>'+
+            '<div style="font-size:10px;color:var(--text-muted);line-height:1.5;margin-bottom:8px">Susun pekerjaan menjadi kartu langkah. Staff akan melihat satu langkah pada satu waktu dan wajib menyelesaikan langkah sebelum lanjut.</div>'+
+            '<div id="pwi-list-'+t.key+'"></div>'+
+            '<div style="margin-top:10px"><label style="font-size:10px;color:var(--text-muted)">Instruksi umum / catatan SOP lama (opsional)</label><textarea id="tahap-isi-'+t.key+'" style="width:100%;min-height:58px;margin-top:4px;padding:7px 9px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical" placeholder="Catatan umum yang berlaku untuk tahap ini...">'+(data.instruksi||'')+'</textarea></div>'+
+          '</div>')+
         expExtra+
+        ''
       '</div>'+
     '</div>';
   });
   return html;
+}
+
+function initPwiEditors(tut){
+  TAHAP_DEFS.forEach(function(t){
+    var data=tut&&tut[t.key]?tut[t.key]:{};
+    pwiRenderEditor(t.key,pwiSteps(data));
+  });
+  pwiBindEditor();
 }
 
 function toggleTahapCheck(key){
@@ -1875,8 +2006,8 @@ function toggleTahapCheck(key){
    lalu render ulang blok instruksi pengemasan-per-jenis di Tahap 5 supaya selalu sinkron. */
 function toggleT4JenisPenyimpanan(key){
   var cb=document.getElementById('t4jp-cb-'+key);
-  var ket=document.getElementById('t4jp-ket-'+key);
-  if(ket) ket.style.display=(cb&&cb.checked)?'block':'none';
+  var wrap=document.getElementById('t4jp-extra-'+key);
+  if(wrap) wrap.style.display=(cb&&cb.checked)?'block':'none';
   renderKemasPerJenis();
 }
 
@@ -1914,13 +2045,15 @@ function getTutFromForm(){
     var cb=document.getElementById('tahap-cb-'+t.key);
     var ta=document.getElementById('tahap-isi-'+t.key);
     result[t.key]={aktif:cb?cb.checked:false,instruksi:ta?ta.value.trim():''};
+    result[t.key].steps=getPwiStepsFromForm(t.key);
   });
   /* Jenis penyimpanan (Tahap 4) */
   var jpData={};
   T4_JENIS_LIST.forEach(function(j){
     var cb=document.getElementById('t4jp-cb-'+j.key);
     var ket=document.getElementById('t4jp-ket-'+j.key);
-    jpData[j.key]={aktif:cb?cb.checked:false, keterangan:ket?ket.value.trim():''};
+    var exp=document.getElementById('t4jp-exp-'+j.key);
+    jpData[j.key]={aktif:cb?cb.checked:false, keterangan:ket?ket.value.trim():'', masaSimpanHari:exp?parseInt(exp.value,10)||0:0};
   });
   if(result.simpan) result.simpan.jenisPenyimpanan=jpData;
   /* Instruksi pengemasan per jenis (Tahap 5) */
@@ -1931,6 +2064,15 @@ function getTutFromForm(){
     pjData[j.key]={instruksi:val};
   });
   if(result.kemas) result.kemas.perJenis=pjData;
+  /* Expired produk jadi sekarang dikendalikan oleh Tahap 4 Penyimpanan.
+     Field lama expiredProduk sengaja dipertahankan jika sudah ada agar data resep lama tidak rusak,
+     tetapi tidak lagi menjadi sumber perhitungan expired pengemasan. */
+  /* Struktur Premix per kode A/B/C... — tambahan, tidak menghapus instruksi lama. */
+  if(result.premix){
+    result.premix.groups=getPremixGroupsFromForm();
+    var oldPremixInstr=result.premix.instruksi||'';
+    if(result.premix.groups.length) result.premix.instruksi=oldPremixInstr;
+  }
   /* Simpan konfigurasi expired dough */
   var suhuEl=document.getElementById('exp-suhu-ruang');
   var chillerEl=document.getElementById('exp-chiller');
@@ -1947,14 +2089,17 @@ function getTutFromForm(){
 
 function initTahapForm(tut){
   document.getElementById('mr-tut-list').innerHTML=buildTahapForm(tut||null);
+  initPwiEditors(tut||null);
   renderKemasPerJenis();
 }
 
 /* ───────────── RESEP ───────────── */
-function addIng(kode,jumlah,sat){
+function addIng(kode,jumlah,sat,premixCode){
   var id='ing-'+ingCount++;
   var opts='';
   bahanData.forEach(function(b){opts+='<option value="'+b.kode+'"'+(kode===b.kode?' selected':'')+'>'+b.kode+' — '+b.nama+'</option>';});
+  var pOpts='<option value="">—</option>';
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(function(c){pOpts+='<option value="'+c+'"'+(premixCode===c?' selected':'')+'>'+c+'</option>';});
   var div=document.createElement('div');div.className='ing-row';div.id=id;
   div.innerHTML='<select onchange="updateRPreview()">'+opts+'</select>'+
     '<input type="number" placeholder="0" value="'+(jumlah||'')+'" min="0" step="any" oninput="updateRPreview()">'+
@@ -1963,6 +2108,7 @@ function addIng(kode,jumlah,sat){
     '<option value="ml"'+(sat==='ml'?' selected':'')+'>ml</option>'+
     '<option value="liter"'+(sat==='liter'?' selected':'')+'>liter</option>'+
     '<option value="pcs"'+(sat==='pcs'?' selected':'')+'>pcs</option></select>'+
+    '<select title="Kode Premix" onchange="updateRPreview()">'+pOpts+'</select>'+
     '<span style="font-size:11px;color:var(--text-muted)" id="cost-'+id+'">Rp 0</span>'+
     '<button class="del-btn" onclick="document.getElementById(\''+id+'\').remove();updateRPreview()">×</button>';
   document.getElementById('mr-ing-list').appendChild(div);
@@ -1974,7 +2120,7 @@ function getIngsFromForm(){
   document.querySelectorAll('#mr-ing-list .ing-row').forEach(function(row){
     var sels=row.querySelectorAll('select');
     var inp=row.querySelector('input[type=number]');
-    if(sels[0]&&inp&&parseFloat(inp.value)>0)result.push({kode:sels[0].value,jumlah:parseFloat(inp.value),sat:sels[1]?sels[1].value:'gr'});
+    if(sels[0]&&inp&&parseFloat(inp.value)>0)result.push({kode:sels[0].value,jumlah:parseFloat(inp.value),sat:sels[1]?sels[1].value:'gr',premixCode:sels[2]?sels[2].value:''});
   });
   return result;
 }
@@ -2012,7 +2158,8 @@ function saveResep(){
     yield:parseFloat(document.getElementById('mr-yield').value)||0,
     yieldSat:document.getElementById('mr-yield-sat').value,
     catatan:document.getElementById('mr-catatan').value.trim(),bahan:bahan,tutorial:tut,
-    expiredDough:expDough};
+    expiredDough:expDough,
+    premixShelfLifeDays:parseInt(document.getElementById('mr-premix-shelf-life').value,10)||0};
   if(idx>=0){resepData[idx]=obj;}else{resepData.push(obj);}
   resepSave();
   resepFirebaseSync(obj);
@@ -2022,6 +2169,7 @@ function saveResep(){
 function clearResepForm(){
   document.getElementById('mr-nama').value='';document.getElementById('mr-sku').value='';
   document.getElementById('mr-yield').value='';document.getElementById('mr-catatan').value='';
+  var ps=document.getElementById('mr-premix-shelf-life');if(ps)ps.value='';
   document.getElementById('mr-idx').value='-1';document.getElementById('mr-ing-list').innerHTML='';
   initTahapForm(null);
   document.getElementById('mr-hpp-val').textContent='Rp 0';document.getElementById('mr-title').textContent='Tambah resep master';
@@ -2034,8 +2182,9 @@ function editResep(idx){
   document.getElementById('mr-nama').value=r.nama;document.getElementById('mr-sku').value=r.sku;
   document.getElementById('mr-jenis').value=r.jenis;document.getElementById('mr-yield').value=r.yield;
   document.getElementById('mr-yield-sat').value=r.yieldSat;document.getElementById('mr-catatan').value=r.catatan||'';
+  var ps=document.getElementById('mr-premix-shelf-life');if(ps)ps.value=r.premixShelfLifeDays||'';
   document.getElementById('mr-ing-list').innerHTML='';ingCount=0;
-  r.bahan.forEach(function(item){addIng(item.kode,item.jumlah,item.sat);});
+  r.bahan.forEach(function(item){addIng(item.kode,item.jumlah,item.sat,item.premixCode||'');});
   /* Gabungkan expiredDough ke dalam tut agar buildTahapForm bisa membacanya */
   var tut2 = Object.assign({}, r.tutorial||{});
   if(r.expiredDough) tut2.expiredDough = r.expiredDough;
@@ -2178,7 +2327,9 @@ function buildTutorialHtml(r){
         '<i class="ti '+TAHAP_ICONS[k]+' " style="font-size:14px;color:var(--brand)"></i>'+
         '<span style="font-size:11px;font-weight:600;color:var(--brand-dark)">Tahap '+nomor+' — '+TAHAP_LABELS[k]+'</span>'+
       '</div>'+
-      '<div style="padding:10px 12px;font-size:12px;white-space:pre-line;line-height:1.6">'+t.instruksi+'</div>'+
+      '<div style="padding:10px 12px;font-size:12px;line-height:1.6">'+
+        (pwiSteps(t).length?'<div style="display:flex;flex-direction:column;gap:7px">'+pwiSteps(t).map(function(st,si){return '<div style="padding:8px 10px;background:var(--surface-1);border-radius:7px"><div style="font-size:10px;font-weight:700;color:var(--brand-dark)">Langkah '+(si+1)+(st.title?' — '+escHtml(st.title):'')+'</div><div style="font-size:11px;white-space:pre-line;margin-top:3px">'+escHtml(st.instruction||'')+'</div>'+(st.durationMin?'<div style="font-size:10px;color:var(--blue);margin-top:4px">⏱ '+st.durationMin+' menit</div>':'')+'</div>';}).join('')+'</div>':escHtml(t.instruksi||'')) +
+      '</div>'+
     '</div>';
   });
   html+='</div>';
@@ -2529,6 +2680,8 @@ function sgcBuatBatchLangsung(noDok){
     var batchKode=genKodeBatchLangsung(r);
     var jumlah=(Number(r.yield)||0)*(Number(p.batch)||0);
     var nowLocal=(function(){var d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16);})();
+    var premixEks=(window.eksekusiData||[]).find(function(e){return e.noDok===noDok;});
+    var waktuPremixSelesai=premixEks&&premixEks.tglProduksi?premixEks.tglProduksi:nowLocal;
     S4.stokSimpan.push({
       id: batchKode+'-'+Date.now(),
       batchKode: batchKode,
@@ -2538,6 +2691,9 @@ function sgcBuatBatchLangsung(noDok){
       jumlahSiapKemas: jumlah,
       satuan: r.yieldSat||'gr',
       waktuMasuk: nowLocal,
+      waktuPremixSelesai: waktuPremixSelesai,
+      waktuPanggangSelesai: '',
+      sumber: 'langsung',
       rakLokasi: '',
       namaPenyimpan: '',
       waktuSimpan: null,
@@ -2792,18 +2948,36 @@ function loadEksekusiForm(ridx){
      ══════════════════════════════════════════════════════════════ */
   var tut=r.tutorial||{};
   var premixData=tut.premix||{};
+  var premixGroups=Array.isArray(premixData.groups)?premixData.groups:[];
   html+='<div class="sgc-subsec" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:14px">';
-  html+='<div style="display:flex;align-items:center;gap:7px;padding:9px 14px;background:var(--brand-light);border-bottom:1px solid var(--brand-mid)">'+
-      '<i class="ti ti-blender" style="font-size:14px;color:var(--brand)"></i>'+
-      '<span style="font-size:12px;font-weight:600;color:var(--brand-dark)">b. Instruksi Tahap 1 — Membuat Premix</span>'+
-    '</div>';
+  html+='<div style="display:flex;align-items:center;gap:7px;padding:9px 14px;background:var(--brand-light);border-bottom:1px solid var(--brand-mid)"><i class="ti ti-blender" style="font-size:14px;color:var(--brand)"></i><span style="font-size:12px;font-weight:600;color:var(--brand-dark)">b. Instruksi Tahap 1 — Membuat Premix</span></div>';
   html+='<div style="padding:14px;background:#fff">';
-  if((premixData.aktif || (premixData.instruksi&&premixData.instruksi.trim().length>0)) && premixData.instruksi){
-    html+='<div style="font-size:12px;white-space:pre-line;line-height:1.7">'+premixData.instruksi+'</div>';
-  } else {
-    html+='<div class="alert-box warn" style="margin:0"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Instruksi Tahap 1 (Premix) belum diisi. Minta Owner mengaktifkan dan mengisi tahap Premix di Resep Master.</div></div>';
-  }
-  html+='</div></div>'; /* tutup sgc-subsec b */
+  if(premixGroups.length){
+    var grouped={}; premixGroups.forEach(function(g){grouped[g.code]=g;});
+    var codes=[]; premixGroups.forEach(function(g){if(g.code&&codes.indexOf(g.code)<0)codes.push(g.code);});
+    r.bahan.forEach(function(item){if(item.premixCode&&codes.indexOf(item.premixCode)<0)codes.push(item.premixCode);});
+    var key=p.noDok+'_premix_progress';
+    var progress={}; try{progress=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch(e){}
+    html+='<div id="sgc-premix-stepper" data-progress-key="'+escHtml(key)+'">';
+    html+='<div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px">Kerjakan sesuai urutan kode. Setelah satu kode selesai, lanjut ke kode berikutnya.</div>';
+    html+='<div id="sgc-premix-progress-text" style="font-size:11px;font-weight:600;color:var(--brand-dark)"></div><div class="sgc-premix-progress"><div id="sgc-premix-progress-bar" style="width:0%"></div></div>';
+    codes.forEach(function(code,ci){
+      var g=grouped[code]||{code:code,name:'',instruksi:''}; var done=!!progress[code];
+      var items=r.bahan.filter(function(it){return (it.premixCode||'')===code;});
+      html+='<div class="sgc-premix-preview-card '+(done?'sgc-premix-done':'')+'" data-premix-card="'+escHtml(code)+'" style="display:'+(ci===0||done?'block':'none')+'">';
+      html+='<div style="display:flex;align-items:center;gap:8px"><div style="font-size:18px;font-weight:800;color:var(--brand)">Kode '+escHtml(code)+'</div><div style="font-size:12px;font-weight:600">'+escHtml(g.name||'Wadah '+code)+'</div>'+(done?'<span class="badge b-green" style="margin-left:auto">Selesai</span>':'')+'</div>';
+      html+='<table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:10px"><thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid var(--border)">Bahan</th><th style="text-align:right;padding:6px;border-bottom:1px solid var(--border)">Jumlah</th><th style="text-align:left;padding:6px;border-bottom:1px solid var(--border)">Satuan</th></tr></thead><tbody>';
+      if(items.length){items.forEach(function(it){var b=getBahan(it.kode);var q=(it.jumlah*p.batch).toLocaleString('id-ID');html+='<tr><td style="padding:6px">'+escHtml(b?b.nama:it.kode)+'</td><td style="padding:6px;text-align:right;font-weight:600">'+q+'</td><td style="padding:6px">'+escHtml(it.sat)+'</td></tr>';});}else{html+='<tr><td colspan="3" style="padding:8px;color:var(--text-muted)">Belum ada bahan yang diberi Kode '+escHtml(code)+'.</td></tr>';}
+      html+='</tbody></table>';
+      if(g.instruksi)html+='<div style="margin-top:8px;padding:9px;background:var(--surface-1);border-radius:7px;font-size:11px;line-height:1.6"><strong>Instruksi:</strong><br>'+escHtml(g.instruksi).replace(/\n/g,'<br>')+'</div>';
+      if(!done)html+='<button type="button" class="btn success" style="margin-top:10px;width:100%" onclick="selesaiPremixKode(\''+escHtml(key)+'\',\''+escHtml(code)+'\')"><i class="ti ti-check"></i>Selesai Kode '+escHtml(code)+'</button>';
+      html+='</div>';
+    });
+    html+='</div>';
+  } else if((premixData.aktif || (premixData.instruksi&&premixData.instruksi.trim().length>0)) && premixData.instruksi){
+    html+='<div style="font-size:12px;white-space:pre-line;line-height:1.7">'+escHtml(premixData.instruksi)+'</div>';
+  } else {html+='<div class="alert-box warn" style="margin:0"><i class="ti ti-alert-circle"></i><div>Instruksi Tahap 1 (Premix) belum diisi. Minta Owner mengaktifkan dan mengisi tahap Premix di Resep Master.</div></div>';}
+  html+='</div></div>';
 
   /* ══════════════════════════════════════════════════════════════
      c. EKSEKUSI PRODUKSI
@@ -2822,7 +2996,7 @@ function loadEksekusiForm(ridx){
     html+='<input type="hidden" id="me-ridx" value="'+ridx+'">';
     html+='<div class="field-row">';
     html+='<div class="field"><label>Tanggal & waktu diproduksi <span style="color:red">*</span></label><input type="datetime-local" id="me-tgl-produksi"></div>';
-    html+='<div class="field"><label>Tanggal expired produk <span style="color:red">*</span></label><input type="date" id="me-expired"></div>';
+    html+='<div class="field"><label>Tanggal expired Premix <span style="color:red">*</span></label><input type="date" id="me-expired" readonly style="background:var(--surface-1)"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Otomatis dari Masa Simpan Premix di Resep Master.</div></div>';
     html+='</div>';
     html+='<div class="field"><label>Nama yang memproduksi (pelaksana produksi) <span style="color:red">*</span></label><input id="me-pelaksana" placeholder="Nama pelaksana produksi"></div>';
     html+='<div class="field"><label>Catatan / kendala (opsional)</label><textarea id="me-catatan" placeholder="Isi bila ada kendala selama proses produksi"></textarea></div>';
@@ -2831,13 +3005,33 @@ function loadEksekusiForm(ridx){
   html+='</div></div>'; /* tutup sgc-subsec c */
   html+='</div></div>';
   document.getElementById('mp-detail').innerHTML=html;
+  initPremixProgressUI();
 
   var now=new Date();now.setMinutes(now.getMinutes()-now.getTimezoneOffset());
   var nowInput=document.getElementById('me-tgl-produksi');
-  if(nowInput)nowInput.value=now.toISOString().slice(0,16);
+  if(nowInput){nowInput.value=now.toISOString().slice(0,16);nowInput.addEventListener('change',updatePremixExpiredPreview);}
   var expEl=document.getElementById('me-expired');
   if(expEl)expEl.min=today();
+  updatePremixExpiredPreview();
 }
+
+function selesaiPremixKode(progressKey,code){
+  var progress={};try{progress=JSON.parse(localStorage.getItem(progressKey)||'{}')||{};}catch(e){}
+  progress[code]=true;localStorage.setItem(progressKey,JSON.stringify(progress));
+  var cards=document.querySelectorAll('[data-premix-card]'); var codes=[];cards.forEach(function(c){codes.push(c.getAttribute('data-premix-card'));});
+  var doneCount=codes.filter(function(c){return !!progress[c];}).length;
+  cards.forEach(function(card,i){var c=card.getAttribute('data-premix-card');var done=!!progress[c];card.style.display=(done||i===doneCount)?'block':'none';if(done)card.classList.add('sgc-premix-done');});
+  var txt=document.getElementById('sgc-premix-progress-text');if(txt)txt.textContent='Progress Premix: '+doneCount+' / '+codes.length+' kode selesai';
+  var bar=document.getElementById('sgc-premix-progress-bar');if(bar)bar.style.width=(codes.length?(doneCount/codes.length*100):0)+'%';
+  if(doneCount>=codes.length){
+    var btns=document.querySelectorAll('#sgc-premix-stepper button');btns.forEach(function(b){b.style.display='none';});
+    var box=document.getElementById('sgc-premix-stepper'); if(box&&!document.getElementById('sgc-premix-all-done')){var d=document.createElement('div');d.id='sgc-premix-all-done';d.className='alert-box ok';d.style.marginTop='10px';d.innerHTML='<i class="ti ti-circle-check"></i><div><strong>Semua kode Premix selesai.</strong> Lanjutkan ke c. Eksekusi Produksi.</div>';box.appendChild(d);}
+    var c=document.getElementById('me-tgl-produksi');if(c){c.scrollIntoView({behavior:'smooth',block:'center'});}
+  }
+}
+function initPremixProgressUI(){var box=document.getElementById('sgc-premix-stepper');if(!box)return;var key=box.getAttribute('data-progress-key');var progress={};try{progress=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch(e){};var cards=document.querySelectorAll('[data-premix-card]');var codes=[];cards.forEach(function(c){codes.push(c.getAttribute('data-premix-card'));});var doneCount=codes.filter(function(c){return !!progress[c];}).length;cards.forEach(function(card,i){var c=card.getAttribute('data-premix-card');card.style.display=(progress[c]||i===doneCount)?'block':'none';if(progress[c])card.classList.add('sgc-premix-done');});var txt=document.getElementById('sgc-premix-progress-text');if(txt)txt.textContent='Progress Premix: '+doneCount+' / '+codes.length+' kode selesai';var bar=document.getElementById('sgc-premix-progress-bar');if(bar)bar.style.width=(codes.length?(doneCount/codes.length*100):0)+'%';if(doneCount>=codes.length){document.querySelectorAll('#sgc-premix-stepper button').forEach(function(b){b.style.display='none';});var d=document.createElement('div');d.id='sgc-premix-all-done';d.className='alert-box ok';d.style.marginTop='10px';d.innerHTML='<i class="ti ti-circle-check"></i><div><strong>Semua kode Premix selesai.</strong> Lanjutkan ke c. Eksekusi Produksi.</div>';box.appendChild(d);}}
+
+function updatePremixExpiredPreview(){var ridxEl=document.getElementById('me-ridx');var dateEl=document.getElementById('me-tgl-produksi');var expEl=document.getElementById('me-expired');if(!ridxEl||!dateEl||!expEl)return;var p=rencanaData[parseInt(ridxEl.value,10)];var r=p?resepData[p.resepIdx]:null;var days=r?parseInt(r.premixShelfLifeDays,10)||0:0;if(!dateEl.value||days<=0){expEl.value='';return;}var d=new Date(dateEl.value);if(isNaN(d.getTime()))return;d.setDate(d.getDate()+days);expEl.value=d.toISOString().slice(0,10);}
 
 function fmtDateTime(dt){
   if(!dt)return'-';
@@ -2850,9 +3044,12 @@ function simpanEksekusi(){
   var p=rencanaData[ridx];if(!p)return;
   var tglProduksi=document.getElementById('me-tgl-produksi').value;
   var tglExpired=document.getElementById('me-expired').value;
+  var r=resepData[p.resepIdx]||{};
+  if(!tglExpired && r.premixShelfLifeDays>0 && tglProduksi){var d=new Date(tglProduksi);d.setDate(d.getDate()+parseInt(r.premixShelfLifeDays,10));tglExpired=d.toISOString().slice(0,10);var ex=document.getElementById('me-expired');if(ex)ex.value=tglExpired;}
   var pelaksana=document.getElementById('me-pelaksana').value.trim();
   var catatan=document.getElementById('me-catatan').value.trim();
   if(!tglProduksi){alert('Tanggal & waktu produksi wajib diisi');return;}
+  var tutCheck=r.tutorial||{};var pg=tutCheck.premix&&Array.isArray(tutCheck.premix.groups)?tutCheck.premix.groups:[];if(pg.length){var progKey=p.noDok+'_premix_progress';var prog={};try{prog=JSON.parse(localStorage.getItem(progKey)||'{}')||{};}catch(e){}var allDone=pg.every(function(g){return g.code&&prog[g.code];});if(!allDone){alert('Selesaikan semua Kode Premix terlebih dahulu.');return;}}
   if(!tglExpired){alert('Tanggal expired produk wajib diisi');return;}
   if(!pelaksana){alert('Nama pelaksana produksi wajib diisi');return;}
   var eks={noDok:p.noDok,tglProduksi:tglProduksi,tglExpired:tglExpired,pelaksana:pelaksana,catatan:catatan,resepIdx:p.resepIdx};
@@ -2917,7 +3114,7 @@ function printModal(modalId){
     '<title>Cetak</title>'+
     '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.14.0/dist/tabler-icons.min.css">'+
     '<style>'+
-      ':root{--brand:#C8783C;--brand-light:#FDF3EA;--brand-mid:#F0C49A;--brand-dark:#7A4520;--green:#2E7D32;--border:#E0DDD6;--border-strong:#C0BDB5;--surface-1:#F0EDE8;--text-primary:#1C1C1A;--text-secondary:#666;--text-muted:#999;}'+
+      ':root{--brand:#166534;--brand-light:#E8F5E9;--brand-mid:#A5D6A7;--brand-dark:#0F4D28;--green:#2E7D32;--border:#E0DDD6;--border-strong:#C0BDB5;--surface-1:#F0EDE8;--text-primary:#1C1C1A;--text-secondary:#666;--text-muted:#999;}'+
       'body{font-family:system-ui,sans-serif;background:#fff;color:#1C1C1A;font-size:13px;margin:20px}'+
       '.doc-preview,.label-preview{max-width:680px;margin:0 auto}'+
       '.doc-header{text-align:center;margin-bottom:14px}'+
@@ -2970,35 +3167,35 @@ var SGC_ACCOUNTS = [
     password: 'owner@sasagu2025',
     role: 'owner',
     nama: 'Owner',
-    aksesNav: ['dashboard','pembelian','bahan','resep','rencana','mulai']
+    aksesNav: ['dashboard','pekerjaan','pembelian','bahan','resep','rencana','mulai','t2','t3','t4','t5','t6','t6-audit']
   },
   {
     username: 'produksi_mgr',
     password: 'prodmgr@sasagu',
     role: 'kepala',
     nama: 'Production Manager',
-    aksesNav: ['dashboard','rencana','resep','mulai']
+    aksesNav: ['dashboard','pekerjaan','rencana','resep','mulai','t2','t3']
   },
   {
     username: 'inventory',
     password: 'invent@sasagu',
     role: 'staff',
     nama: 'Inventory / Procurement',
-    aksesNav: ['dashboard','pembelian','bahan']
+    aksesNav: ['dashboard','pekerjaan','pembelian','bahan','t6']
   },
   {
     username: 'operator',
     password: 'operator@sasagu',
     role: 'staff',
     nama: 'Operator Produksi',
-    aksesNav: ['dashboard','mulai']
+    aksesNav: ['dashboard','pekerjaan','mulai','t2','t3']
   },
   {
     username: 'qc_packing',
     password: 'qcpack@sasagu',
     role: 'staff',
     nama: 'QC / Packing',
-    aksesNav: ['dashboard']
+    aksesNav: ['dashboard','pekerjaan','t4','t5']
   }
 ];
 
@@ -3094,8 +3291,12 @@ function doLogin(){
   /* Hilangkan login screen */
   document.getElementById('login-screen').classList.add('hidden');
 
-  /* Arahkan ke dashboard */
-  goTo('dashboard', document.getElementById('nav-dashboard'));
+  /* Setelah login, semua role langsung masuk Pekerjaan Saya. */
+  if (typeof goTo === 'function') {
+    goTo('pekerjaan', document.getElementById('nav-pekerjaan'));
+  } else {
+    goTo('dashboard', document.getElementById('nav-dashboard'));
+  }
 }
 
 /* Blokir akses halaman sebelum login */
@@ -3106,6 +3307,7 @@ function doLogin(){
   var _origGoTo = window.goTo;
   window.goTo = function(id, el){
     if(!_sgcCurrentAccount && id !== 'dashboard') return;
+    if(_sgcCurrentAccount && id === 'pekerjaan'){ if(appEl) appEl.style.visibility = ''; _origGoTo(id, el); return; }
     /* Cek apakah halaman ini boleh diakses oleh akun yang login */
     if(_sgcCurrentAccount && _sgcCurrentAccount.aksesNav.indexOf(id) === -1){
       alert('Anda tidak memiliki akses ke halaman ini.');
@@ -3138,6 +3340,28 @@ function doLogin(){
 .sgc-ni-badge .sgc-ni-val{font-size:13px;font-weight:700;letter-spacing:1px;font-family:var(--font-mono,monospace)}
 .sgc-ni-badge .sgc-ni-chip{margin-left:auto;font-size:9px;background:#C8E6C9;
   border-radius:10px;padding:2px 7px;font-weight:600;white-space:nowrap}
+
+<style>
+.sgc-premix-editor{margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:10px;background:#fff}
+.sgc-premix-group{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden}
+.sgc-premix-group-head{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--brand-light);border-bottom:1px solid var(--brand-mid)}
+.sgc-premix-code{font-weight:800;font-size:13px;min-width:24px}
+.sgc-premix-group-body{padding:9px 10px}
+.sgc-premix-preview-card{border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:#fff}
+.sgc-premix-progress{height:7px;background:var(--surface-1);border-radius:10px;overflow:hidden;margin:8px 0 12px}
+.sgc-premix-progress>div{height:100%;background:var(--green);transition:width .2s}
+.sgc-premix-done{opacity:.7}
+.sgc-pwi-step-current{border:2px solid var(--brand);box-shadow:0 4px 14px rgba(0,0,0,.06)}
+.sgc-pwi-exec{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;margin-bottom:12px}
+.sgc-pwi-exec-head{padding:10px 14px;background:var(--brand-light);border-bottom:1px solid var(--brand-mid)}
+.sgc-pwi-exec-body{padding:16px}
+.sgc-pwi-exec-progress{height:7px;background:var(--surface-1);border-radius:10px;overflow:hidden;margin:8px 0 14px}
+.sgc-pwi-exec-progress>div{height:100%;background:var(--green);transition:width .2s}
+.sgc-pwi-exec-stepno{font-size:10px;font-weight:700;color:var(--text-muted);letter-spacing:.4px}
+.sgc-pwi-exec-title{font-size:20px;font-weight:700;color:var(--brand-dark);line-height:1.3;margin:5px 0 10px}
+.sgc-pwi-exec-instruction{font-size:14px;line-height:1.7;white-space:pre-line;color:var(--text-secondary);background:var(--surface-1);border-radius:8px;padding:12px}
+.sgc-pwi-timer{font-size:30px;font-weight:800;text-align:center;padding:12px 0;font-family:var(--font-mono,monospace);color:var(--brand-dark)}
+</style>
 </style>
 
 <script>
@@ -3541,6 +3765,11 @@ window.SgcT2 = window.SgcT2 || {
 };
 
 var S = window.SgcT2; /* shorthand */
+S.pwiStepIndex=0;
+S.pwiSteps=[];
+S.pwiTimer=null;
+S.pwiTimerEnd=0;
+S.pwiCompleted=[];
 
 /* ══════════════════════════════════════════════════════════════════
    UTIL
@@ -3738,16 +3967,19 @@ function injectPages(){
           /* STEP 2: Area pembuatan dough (muncul setelah NI valid) */
           '<div id="t2-active-area" style="display:none">'+
             '<div class="exec-summary" id="t2-identity-box" style="margin-bottom:12px"></div>'+
+            '<div id="t2-pwi-wrap" style="display:none">'+
+              '<div class="sec-label">Langkah 2 — Panduan Kerja Dough</div>'+
+              '<div id="t2-pwi-exec"></div>'+
+            '</div>'+
             '<div class="alert-box warn" id="t2-no-tahap-warn" style="display:none">'+
               '<i class="ti ti-info-circle"></i>'+
               '<div>Tahap 2 (Dough) <strong>tidak diaktifkan</strong> di resep produk ini. Aktifkan tahap Dough di Resep Master terlebih dahulu.</div>'+
             '</div>'+
             '<div id="t2-dough-form-wrap">'+
-              '<div class="sec-label">Cara Membuat</div>'+
-              '<div id="t2-instruksi-box" style="border:.5px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">'+
+              '<div id="t2-legacy-instruksi" style="display:none;border:.5px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">'+
                 '<div id="t2-instruksi-text" style="padding:12px;font-size:12px;white-space:pre-line;line-height:1.7;color:var(--text-secondary)">—</div>'+
               '</div>'+
-              '<div class="sec-label">Langkah 2 — Berapa Bagian Dough yang Dibuat?</div>'+
+              '<div class="sec-label">Langkah 3 — Berapa Bagian Dough yang Dibuat?</div>'+
               '<div class="field" style="margin-bottom:8px">'+
                 '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px">'+
                   '<input type="checkbox" id="t2-partial-cb" onchange="SgcT2.onPartialChange()" style="width:14px;height:14px;accent-color:var(--blue)">'+
@@ -3832,6 +4064,63 @@ SgcT2.refreshT2 = function(){
 };
 
 /* Cari Nomor Induk dari input */
+function pwiProgressKey(ni,key){return 'sgc_pwi_progress_'+key+'_'+String(ni||'').replace(/[^a-zA-Z0-9_.-]/g,'_');}
+function pwiLoadProgress(ni,key,count){var out=[];try{out=JSON.parse(localStorage.getItem(pwiProgressKey(ni,key))||'[]')||[];}catch(e){};return Array.from({length:count},function(_,i){return !!out[i];});}
+function pwiSaveProgress(ni,key,arr){try{localStorage.setItem(pwiProgressKey(ni,key),JSON.stringify(arr));}catch(e){}}
+function pwiClearTimer(){if(S.pwiTimer){clearInterval(S.pwiTimer);S.pwiTimer=null;}S.pwiTimerEnd=0;}
+function pwiFormatSeconds(sec){sec=Math.max(0,sec|0);return String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0');}
+function pwiRenderT2(resep){
+  var wrap=document.getElementById('t2-pwi-wrap'),host=document.getElementById('t2-pwi-exec');
+  if(!wrap||!host)return;
+  var steps=pwiSteps(resep&&resep.tutorial&&resep.tutorial.dough);
+  S.pwiSteps=steps; pwiClearTimer();
+  if(!steps.length){wrap.style.display='none';return false;}
+  wrap.style.display='block'; S.pwiCompleted=pwiLoadProgress(S.currentNI,'dough',steps.length);
+  var first=S.pwiCompleted.findIndex(function(x){return !x;});
+  S.pwiStepIndex=first<0?steps.length:first;
+  pwiRenderT2Card(); return true;
+}
+function pwiRenderT2Card(){
+  var host=document.getElementById('t2-pwi-exec'); if(!host)return;
+  var steps=S.pwiSteps||[],i=S.pwiStepIndex||0;
+  if(i>=steps.length){
+    pwiClearTimer();
+    host.innerHTML='<div class="alert-box ok" style="margin:0"><i class="ti ti-circle-check"></i><div><strong>Semua langkah kerja Dough selesai.</strong><br>Silakan lanjut ke pembuatan label / pembagian dough.</div></div>';
+    var after=document.getElementById('t2-dough-form-wrap');if(after)after.style.display='block';
+    return;
+  }
+  var st=steps[i],type=st.type||'proses',dur=(parseInt(st.durationMin,10)||0)*60;
+  var pct=Math.round((i/steps.length)*100);
+  var typeName=pwiTypeLabel(type);
+  var timerHtml='';
+  if(type==='timer'&&dur>0) timerHtml='<div class="sgc-pwi-timer" id="t2-pwi-timer">'+pwiFormatSeconds(Math.ceil((S.pwiTimerEnd-Date.now())/1000))+'</div>';
+  host.innerHTML='<div class="sgc-pwi-exec">'+
+    '<div class="sgc-pwi-exec-head"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center"><span class="sgc-pwi-exec-stepno">LANGKAH '+(i+1)+' DARI '+steps.length+'</span><span class="badge b-blue">'+escHtml(typeName)+'</span></div><div class="sgc-pwi-exec-progress"><div style="width:'+pct+'%"></div></div></div>'+
+    '<div class="sgc-pwi-exec-body"><div class="sgc-pwi-exec-title">'+escHtml(st.title||('Langkah '+(i+1)))+'</div><div class="sgc-pwi-exec-instruction">'+escHtml(st.instruction||'Ikuti instruksi kerja yang ditetapkan di Resep Master.')+'</div>'+timerHtml+
+    '<div style="display:flex;gap:8px;margin-top:14px">'+
+      (i>0?'<button class="btn" onclick="SgcT2.pwiBack()"><i class="ti ti-arrow-left"></i>Kembali</button>':'')+
+      '<button class="btn success" id="t2-pwi-next" style="flex:1" onclick="SgcT2.pwiNext()" '+(type==='timer'&&dur>0?'disabled':'')+'><i class="ti ti-check"></i>'+(i===steps.length-1?'Selesai Langkah Terakhir':'Selesai & Lanjut')+'</button>'+
+    '</div></div></div>';
+  if(type==='timer'&&dur>0){
+    if(!S.pwiTimerEnd){
+      var savedStart=localStorage.getItem(pwiProgressKey(S.currentNI,'dough')+'_timer_'+i);
+      if(savedStart) S.pwiTimerEnd=parseInt(savedStart,10); else S.pwiTimerEnd=Date.now()+dur*1000;
+      try{localStorage.setItem(pwiProgressKey(S.currentNI,'dough')+'_timer_'+i,String(S.pwiTimerEnd));}catch(e){}
+    }
+    if(S.pwiTimerEnd<=Date.now()){var b=document.getElementById('t2-pwi-next');if(b)b.disabled=false;}
+    S.pwiTimer=setInterval(function(){var left=Math.ceil((S.pwiTimerEnd-Date.now())/1000),el=document.getElementById('t2-pwi-timer'),b=document.getElementById('t2-pwi-next');if(el)el.textContent=pwiFormatSeconds(left);if(left<=0){pwiClearTimer();try{localStorage.removeItem(pwiProgressKey(S.currentNI,'dough')+'_timer_'+i);}catch(e){};if(b)b.disabled=false;}},250);
+  }
+}
+SgcT2.pwiNext=function(){
+  var i=S.pwiStepIndex||0,st=S.pwiSteps[i]; if(!st)return;
+  if(st.type==='timer'&&st.durationMin&&S.pwiTimerEnd>Date.now()){alert('Timer belum selesai. Tunggu sampai waktu habis sebelum melanjutkan.');return;}
+  pwiClearTimer(); S.pwiCompleted[i]=true; pwiSaveProgress(S.currentNI,'dough',S.pwiCompleted);
+  try{localStorage.removeItem(pwiProgressKey(S.currentNI,'dough')+'_timer_'+i);}catch(e){}
+  S.pwiStepIndex=i+1; pwiRenderT2Card();
+  if(S.pwiStepIndex>=S.pwiSteps.length){var f=document.getElementById('t2-dough-form-wrap');if(f)f.style.display='block';}
+};
+SgcT2.pwiBack=function(){var i=S.pwiStepIndex||0;if(i<=0)return;pwiClearTimer();S.pwiStepIndex=i-1;pwiRenderT2Card();};
+
 SgcT2.cariNomorInduk = function(){
   var niInput = (document.getElementById('t2-ni-input').value||'').trim();
   var resultBox = document.getElementById('t2-ni-result');
@@ -3941,9 +4230,12 @@ SgcT2.cariNomorInduk = function(){
     if(warn) warn.style.display='none';
     document.getElementById('t2-dough-form-wrap').style.display='block';
     var instrEl = document.getElementById('t2-instruksi-text');
-    if(instrEl) instrEl.textContent = (resep&&resep.tutorial.dough.instruksi)||'Instruksi belum diisi di Resep Master.';
+    if(instrEl) instrEl.textContent = (resep&&resep.tutorial.dough.instruksi)||'';
+    var legacyBox=document.getElementById('t2-legacy-instruksi');
+    if(legacyBox) legacyBox.style.display=(resep&&resep.tutorial.dough.instruksi)?'block':'none';
     /* Simpan resep aktif di state untuk dipakai generateLabelInputs */
     S.currentResep = resep;
+    var hasPwi=pwiRenderT2(resep);
     /* Reset partisi */
     var cb=document.getElementById('t2-partial-cb');
     if(cb) cb.checked=false;
@@ -3953,6 +4245,9 @@ SgcT2.cariNomorInduk = function(){
     document.getElementById('t2-simpan-btn').style.display='none';
     /* Auto-generate 1 label (tidak dipecah) */
     SgcT2.generateLabelInputs(1);
+    if(hasPwi){
+      var df=document.getElementById('t2-dough-form-wrap');if(df)df.style.display=(S.pwiStepIndex>=S.pwiSteps.length)?'block':'none';
+    }
   }
 };
 SgcT2.onPartialChange = function(){
@@ -4313,6 +4608,7 @@ SgcT2.submitHasilPanggang = function(){
   batch.wasteGram=wasteGram;
   batch.keterangan=ket;
   batch.yieldBersih=yieldBersih;
+  batch.waktuSelesaiPanggang=batch.waktuSelesaiPanggang||nowLocal();
   batch.selesai=true;
 
   /* Upcycle → catat ke Bahan Baku Sekunder */
@@ -4636,6 +4932,9 @@ function t4PushBatchIfNew(batch){
     jumlahSiapKemas: batch.yieldBersih,
     satuan: 'gr',
     waktuMasuk: t4NowLocal(),
+    waktuPanggangSelesai: batch.waktuSelesaiPanggang||'',
+    waktuPremixSelesai: '',
+    sumber: 'panggang',
     rakLokasi: '',
     namaPenyimpan: '',
     waktuSimpan: null,
@@ -4733,6 +5032,7 @@ function t4InjectPage(){
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:left;font-size:10px">Produk</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:right;font-size:10px">Jumlah Sebelum Kemas</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:left;font-size:10px">Jenis Penyimpanan</th>'+
+              '<th style="padding:6px 8px;background:var(--surface-1);text-align:left;font-size:10px">Expired Penyimpanan</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:left;font-size:10px">Letak Rak</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:left;font-size:10px">Disimpan Oleh</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:left;font-size:10px">Status</th>'+
@@ -4825,6 +5125,7 @@ window.SgcT4.refresh = function(){
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)">'+it.namaProduk+'</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border);text-align:right">'+Number(it.jumlahSiapKemas).toLocaleString('id-ID')+' '+it.satuan+'</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)">'+jenisBadge+'</td>'+
+      '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)">'+(it.expiredPenyimpanan?'<strong>'+t4TsLabel(it.expiredPenyimpanan)+'</strong>':'<span style="color:var(--text-muted)">Belum diatur</span>')+'</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)">'+(it.rakLokasi||'<span style="color:var(--text-muted)">—</span>')+'</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)">'+(it.namaPenyimpan||'<span style="color:var(--text-muted)">—</span>')+'</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)">'+statusBadge+'</td>'+
@@ -4892,6 +5193,30 @@ window.sgcGetInstruksiKemasJenis=function(sku,jenisKey){
 function t4GetResepBySku(sku){ return window.sgcGetResepBySku(sku); }
 function t4GetKeteranganJenis(sku,jenisKey){ return window.sgcGetKeteranganJenisSimpan(sku,jenisKey); }
 
+window.sgcGetMasaSimpanPenyimpanan=function(item,jenis){
+  if(!item||!jenis) return 0;
+  var r=window.sgcGetResepBySku(item.sku);
+  var jd=r&&r.tutorial&&r.tutorial.simpan&&r.tutorial.simpan.jenisPenyimpanan ? r.tutorial.simpan.jenisPenyimpanan[jenis] : null;
+  return jd ? (parseInt(jd.masaSimpanHari,10)||0) : 0;
+};
+window.sgcGetTitikMulaiExpired=function(item){
+  if(!item) return {iso:'',label:''};
+  if(item.sumber==='langsung' || item.waktuPremixSelesai){
+    return {iso:item.waktuPremixSelesai||'',label:'selesai Tahap 1 — Premix'};
+  }
+  return {iso:item.waktuPanggangSelesai||'',label:'selesai Tahap 3 — Panggang'};
+};
+window.sgcCalcExpiredPenyimpanan=function(item,jenis,fromISO){
+  var days=window.sgcGetMasaSimpanPenyimpanan(item,jenis);
+  var titik=window.sgcGetTitikMulaiExpired(item);
+  var base=fromISO || titik.iso;
+  if(!days||!base) return '';
+  var d=new Date(base);
+  if(isNaN(d.getTime())) return '';
+  d.setDate(d.getDate()+days);
+  return d.toISOString().slice(0,16);
+};
+
 window.SgcT4.bukaModalSimpan = function(id){
   var it=S4.stokSimpan.find(function(x){return x.id===id;});
   if(!it) return;
@@ -4899,12 +5224,14 @@ window.SgcT4.bukaModalSimpan = function(id){
   document.getElementById('t4m-info').innerHTML=
     '<div class="doc-row"><span>Kode Batch</span><strong><code>'+it.batchKode+'</code></strong></div>'+
     '<div class="doc-row"><span>Nama Produk</span><strong>'+it.namaProduk+'</strong></div>'+
-    '<div class="doc-row"><span>Jumlah Sebelum Dikemas</span><strong>'+Number(it.jumlahSiapKemas).toLocaleString('id-ID')+' '+it.satuan+'</strong></div>';
+    '<div class="doc-row"><span>Jumlah Sebelum Dikemas</span><strong>'+Number(it.jumlahSiapKemas).toLocaleString('id-ID')+' '+it.satuan+'</strong></div>'+    '<div class="doc-row"><span>Mulai Hitung Expired</span><strong>'+(it.waktuPremixSelesai?'Selesai Tahap 1 — Premix':it.waktuPanggangSelesai?'Selesai Tahap 3 — Panggang':'Belum tercatat')+'</strong></div>';
   document.getElementById('t4m-jenis').value = it.jenisPenyimpanan||'';
   document.getElementById('t4m-rak').value = it.rakLokasi||'';
   document.getElementById('t4m-penyimpan').value = it.namaPenyimpan||'';
   SgcT4._sopSku = it.sku;
+  SgcT4._simpanItem = it;
   window.SgcT4.onJenisChange(true);
+  window.SgcT4.updateExpiredPenyimpananPreview();
   openModal('modal-t4-simpan');
 };
 
@@ -4926,6 +5253,20 @@ window.SgcT4.onJenisChange = function(skipPopup){
     document.getElementById('t4-sop-popup-body').textContent=ket;
     openModal('modal-t4-sop-popup');
   }
+  window.SgcT4.updateExpiredPenyimpananPreview();
+};
+
+window.SgcT4.updateExpiredPenyimpananPreview=function(){
+  var item=SgcT4._simpanItem;
+  var jenis=(document.getElementById('t4m-jenis')||{}).value||'';
+  var el=document.getElementById('t4m-expired-preview');
+  var hint=document.getElementById('t4m-expired-hint');
+  if(!el) return;
+  var days=window.sgcGetMasaSimpanPenyimpanan(item,jenis);
+  var titik=window.sgcGetTitikMulaiExpired(item);
+  var exp=window.sgcCalcExpiredPenyimpanan(item,jenis,titik.iso);
+  el.value=exp?tsLabel(exp):'';
+  if(hint) hint.textContent=days ? 'Otomatis '+days+' hari sejak '+(titik.label||'titik produksi')+'.' : 'Masa simpan '+(T4_JENIS_LABEL[jenis]||jenis||'ini')+' belum diatur di Master Resep.';
 };
 
 window.SgcT4.submitSimpan = function(){
@@ -4943,6 +5284,10 @@ window.SgcT4.submitSimpan = function(){
   it.namaPenyimpan=penyimpan;
   it.status='tersimpan';
   it.waktuSimpan=t4NowLocal();
+  var titikExpired=window.sgcGetTitikMulaiExpired(it);
+  it.expiredMulaiDari=titikExpired.iso;
+  it.expiredMulaiLabel=titikExpired.label;
+  it.expiredPenyimpanan=window.sgcCalcExpiredPenyimpanan(it,jenis,titikExpired.iso);
   t4Save();
   closeModal('modal-t4-simpan');
   window.SgcT4.refresh();
@@ -4966,6 +5311,7 @@ window.SgcT4.cetakLabel = function(id){
     '<div class="doc-row"><span>Letak Rak</span><span>'+it.rakLokasi+'</span></div>'+
     '<div class="doc-row"><span>Disimpan Oleh</span><span>'+it.namaPenyimpan+'</span></div>'+
     '<div class="doc-row"><span>Waktu Disimpan</span><span>'+t4TsLabel(it.waktuSimpan)+'</span></div>'+
+    '<div class="doc-row"><span>Mulai Hitung Expired</span><span>'+(it.expiredMulaiDari?t4TsLabel(it.expiredMulaiDari):'—')+'<br><small>'+(it.expiredMulaiLabel||'')+'</small></span></div>'+    '<div class="doc-row"><span>Expired Penyimpanan</span><span>'+(it.expiredPenyimpanan?t4TsLabel(it.expiredPenyimpanan):'Belum diatur')+'</span></div>'+
   '</div>';
 
   var win=window.open('','_blank','width=480,height=640');
@@ -5045,6 +5391,7 @@ if(document.readyState==='loading'){
           <option value="chiller">Chiller</option>
           <option value="freezer">Freezer</option>
         </select>
+        <div class="field" style="margin-top:8px"><label>Expired Penyimpanan (otomatis)</label><input id="t4m-expired-preview" type="text" readonly style="background:var(--surface-1);font-weight:600"><div id="t4m-expired-hint" style="font-size:9px;color:var(--text-muted);margin-top:3px"></div></div>
       </div>
       <div id="t4m-sop-box" style="display:none;margin:-2px 0 12px;padding:10px 12px;background:#FFF3E0;border:.5px solid #FFCC80;border-radius:7px;font-size:11px;color:#7A3E00">
         <div style="font-weight:600;margin-bottom:4px"><i class="ti ti-alert-triangle"></i> Ikuti Prosedur Penyimpanan</div>
@@ -5440,6 +5787,14 @@ function t5Save(){ try{localStorage.setItem(T5_LS,JSON.stringify(window.SgcT5.hi
 window.SgcT5=window.SgcT5||{histori:t5Load()};
 var S5=window.SgcT5;
 
+/* RECOVERY OUTPUT — hanya menambah alur Tahap 5, tidak mengubah modul stok/penjualan lain.
+   Sisa batch yang belum dikemas dapat dialihkan menjadi CURAH atau SAMPLE.
+   Traceability batch tetap disimpan pada setiap record recovery. */
+var T5_RECOVERY_LS='sgc_t5_recovery_v1';
+function t5RecoveryLoad(){try{var r=localStorage.getItem(T5_RECOVERY_LS);return r?JSON.parse(r):[];}catch(e){return [];}}
+function t5RecoverySave(){try{localStorage.setItem(T5_RECOVERY_LS,JSON.stringify(S5.recovery));}catch(e){}}
+S5.recovery=Array.isArray(S5.recovery)?S5.recovery:t5RecoveryLoad();
+
 function t5NowLocal(){
   var d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset());
   return d.toISOString().slice(0,16);
@@ -5530,6 +5885,28 @@ function t5InjectPage(){
         '</div>'+
       '</div>'+
       '<div class="card" style="margin-top:10px">'+
+        '<div class="card-head"><span style="font-weight:500;font-size:12px"><i class="ti ti-recycle" style="color:var(--green)"></i> Recovery Output — Sisa Produksi Layak Olah</span></div>'+
+        '<div class="card-body">'+
+          '<div style="font-size:11px;color:var(--text-secondary);line-height:1.6;margin-bottom:10px">Sisa dari beberapa batch <strong>produk/resep yang sama</strong> dapat digabung. Sistem tetap menyimpan asal setiap batch untuk traceability. Hanya sisa yang belum dikemas, belum dialihkan, dan belum melewati expired yang dapat digunakan.</div>'+
+          '<div id="t5-recovery-table-wrap"></div>'+
+          '<div id="t5-recovery-empty" class="empty-state" style="padding:16px;display:none"><i class="ti ti-recycle-off"></i>Belum ada sisa produksi yang dapat direcovery.</div>'+
+          '<div id="t5-recovery-form" style="display:none;margin-top:12px;padding:12px;background:var(--surface-1);border-radius:8px;border:.5px solid var(--border)">'+
+            '<div style="font-size:11px;font-weight:700;color:var(--brand-dark);margin-bottom:8px">Buat Recovery Output</div>'+
+            '<div id="t5-recovery-selected" style="font-size:11px;margin-bottom:8px"></div>'+
+            '<div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">'+
+              '<div class="field" style="width:150px"><label>Jumlah (gr)</label><input id="t5-recovery-qty" type="number" min="1" placeholder="Contoh 500" oninput="SgcT5._refreshRecoveryForm()"></div>'+
+              '<div class="field" style="width:180px"><label>Output</label><select id="t5-recovery-type"><option value="curah">Produk Curah</option><option value="sample">Produk Sample</option></select></div>'+
+              '<div class="field" style="width:220px"><label>Nama Operator</label><input id="t5-recovery-operator" placeholder="Nama staf"></div>'+
+            '</div>'+
+            '<div id="t5-recovery-preview" style="font-size:10px;color:var(--text-muted);margin:6px 0 10px"></div>'+
+            '<button class="btn success" onclick="SgcT5.buatRecovery()"><i class="ti ti-check"></i>Simpan Recovery Output</button> '+
+            '<button class="btn sm" onclick="SgcT5.batalRecovery()">Batal</button>'+
+          '</div>'+
+          '<div style="margin-top:14px;font-size:11px;font-weight:600;color:var(--brand-dark)">Histori Recovery</div>'+
+          '<div id="t5-recovery-history" style="margin-top:6px"></div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="card" style="margin-top:10px">'+
         '<div class="card-head sgc-histori-head"><span style="font-weight:500;font-size:12px">Histori Pengemasan</span></div>'+
         '<div id="t5-histori-body"></div>'+
       '</div>'+
@@ -5556,7 +5933,10 @@ window.SgcT5.refreshStokTersedia=function(){
   var stok=(window.SgcT4 && window.SgcT4.stokSimpan)||[];
   var rows=stok.map(function(it){
     var dikemas=S5.histori.filter(function(h){return h.batchKode===it.batchKode;}).reduce(function(s,h){return s+(h.totalGramDikemas||0);},0);
-    var sisa=(it.jumlahSiapKemas||0)-dikemas;
+    var recovered=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(it.batchKode)>=0;}).reduce(function(s,h){
+      var src=(h.sources||[]).find(function(x){return x.batchKode===it.batchKode;}); return s+(src?Number(src.gram)||0:0);
+    },0);
+    var sisa=(it.jumlahSiapKemas||0)-dikemas-recovered;
     return {it:it, dikemas:dikemas, sisa:sisa};
   }).filter(function(r){return r.sisa>0;});
   if(!rows.length){
@@ -5630,6 +6010,27 @@ window.sgcFocusFlow=function(targetId, focusId, delay){
   }, delay||0);
 };
 
+
+function sgcGetKemasExpiryInfo(item){
+  if(!item) return {date:'',days:0,source:'',sourceLabel:'',configured:false};
+  /* Tahap 5 hanya menerima expired yang sudah ditentukan di Tahap 4.
+     Tidak menghitung ulang umur simpan di sini. */
+  if(item.expiredPenyimpanan){
+    var titik=window.sgcGetTitikMulaiExpired(item);
+    var days=window.sgcGetMasaSimpanPenyimpanan(item,item.jenisPenyimpanan);
+    return {
+      date:String(item.expiredPenyimpanan).slice(0,10),
+      days:days,
+      source:item.jenisPenyimpanan||'penyimpanan',
+      sourceLabel:'Tahap 4 — '+(T4_JENIS_LABEL[item.jenisPenyimpanan]||item.jenisPenyimpanan||'Penyimpanan'),
+      base:titik.iso,
+      baseLabel:titik.label,
+      configured:true
+    };
+  }
+  return {date:'',days:0,source:'',sourceLabel:'',configured:false};
+}
+
 window.SgcT5.cariT4Batch=function(){
   var btn=document.getElementById('t5-btn-cari-batch')||document.querySelector('#page-t5 button[onclick*="cariT4Batch"]');
   SgcUxAction.set(btn,'Menyiapkan batch...',true);
@@ -5647,8 +6048,12 @@ window.SgcT5.cariT4Batch=function(){
     window.SgcT4.tandaiTersimpanOtomatis(item.id);
   }
   var sudahDikemas=S5.histori.filter(function(h){return h.batchKode===item.batchKode;}).reduce(function(s,h){return s+(h.totalGramDikemas||0);},0);
-  var sisaGram=(item.jumlahSiapKemas||0)-sudahDikemas;
-  S5._wip={batch:item, sisaGram:sisaGram, items:[]};
+  var sudahRecovery=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(item.batchKode)>=0;}).reduce(function(s,h){
+    var src=(h.sources||[]).find(function(x){return x.batchKode===item.batchKode;}); return s+(src?Number(src.gram)||0:0);
+  },0);
+  var sisaGram=(item.jumlahSiapKemas||0)-sudahDikemas-sudahRecovery;
+  var expiryInfo=sgcGetKemasExpiryInfo(item);
+  S5._wip={batch:item, sisaGram:sisaGram, items:[], expiryInfo:expiryInfo};
   var infoDiv=document.getElementById('t5-batch-info');
   infoDiv.style.display='block';
   infoDiv.innerHTML=
@@ -5659,6 +6064,8 @@ window.SgcT5.cariT4Batch=function(){
       '<div class="doc-row"><span>Jumlah Awal</span><strong>'+Number(item.jumlahSiapKemas).toLocaleString('id-ID')+' gr</strong></div>'+
       '<div class="doc-row"><span>Sudah Dikemas</span><strong>'+Number(sudahDikemas).toLocaleString('id-ID')+' gr</strong></div>'+
       '<div class="doc-row"><span>Sisa Tersedia</span><strong style="color:'+(sisaGram>0?'var(--green)':'var(--red)')+'">'+Number(sisaGram).toLocaleString('id-ID')+' gr</strong></div>'+
+      '<div class="doc-row"><span>Expired Produk Jadi</span><strong style="color:var(--green)">'+(expiryInfo.date?fmtDate(expiryInfo.date):'Belum terkonfigurasi')+'</strong></div>'+
+      '<div style="font-size:10px;color:var(--text-muted);margin-top:6px">Otomatis: '+(expiryInfo.days?expiryInfo.days+' hari '+expiryInfo.sourceLabel:'atur masa simpan di Resep Master → Tutorial → Pengemasan')+'</div>'+
     '</div>';
   if(sisaGram<=0){SgcUxAction.restore(btn);document.getElementById('t5-form-area').style.display='none';alert('Stok batch ini sudah habis dikemas.');return;}
   SgcUxAction.restore(btn);
@@ -5805,6 +6212,12 @@ window.SgcT5.simpanPengemasan=function(){
   if(!rows.length){SgcUxAction.restore(btn);alert('Tambahkan minimal 1 SKU yang akan dikemas.');return;}
   var operator=(document.getElementById('t5-operator').value||'').trim();
   if(!operator){SgcUxAction.restore(btn);alert('Nama operator pengemasan wajib diisi.');return;}
+  var expiryInfo=S5._wip.expiryInfo||sgcGetKemasExpiryInfo(S5._wip.batch);
+  if(!expiryInfo.date){
+    SgcUxAction.restore(btn);
+    alert('Expired produk belum dapat dihitung. Owner perlu mengatur masa simpan Produk Intermediate / Ready to Eat di Resep Master → Tutorial → Tahap Pengemasan.');
+    return;
+  }
   if(S5._wip.wajibKonfirmasi){
     var cbProsedur=document.getElementById('t5-prosedur-cb');
     if(!cbProsedur||!cbProsedur.checked){SgcUxAction.restore(btn);alert('Produk ini berasal dari Chiller/Freezer. Anda wajib membaca & mencentang konfirmasi prosedur pengemasan terlebih dahulu.');return;}
@@ -5835,7 +6248,10 @@ window.SgcT5.simpanPengemasan=function(){
     items:items,
     waktuKemas:t5NowLocal(),
     operatorKemas:operator,
-    jenisPenyimpananAsal:S5._wip.batch.jenisPenyimpanan||''
+    jenisPenyimpananAsal:S5._wip.batch.jenisPenyimpanan||'',
+    tglExpired:expiryInfo.date,
+    expiredDasar:expiryInfo.source,
+    expiredMasaSimpanHari:expiryInfo.days
   };
   S5.histori.push(record);
   t5Save();
@@ -5844,7 +6260,10 @@ window.SgcT5.simpanPengemasan=function(){
     var t4item=(window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===record.batchKode;});
     if(t4item){
       var totalDikemasAkum=S5.histori.filter(function(h){return h.batchKode===record.batchKode;}).reduce(function(s,h){return s+(h.totalGramDikemas||0);},0);
-      if(totalDikemasAkum>=(t4item.jumlahSiapKemas||0)){ t4item.status='dikemas_habis'; }
+      var totalRecoveryAkum=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(record.batchKode)>=0;}).reduce(function(s,h){
+        var src=(h.sources||[]).find(function(x){return x.batchKode===record.batchKode;}); return s+(src?Number(src.gram)||0:0);
+      },0);
+      if(totalDikemasAkum+totalRecoveryAkum>=(t4item.jumlahSiapKemas||0)){ t4item.status='dikemas_habis'; }
       /* Simpan ulang ke localStorage T4 */
       try{localStorage.setItem('sgc_t4_stok_simpan_v1',JSON.stringify(window.SgcT4.stokSimpan));}catch(e){}
     }
@@ -5887,6 +6306,141 @@ window.SgcT5.renderHistori=function(){
   body.innerHTML=html;
 };
 
+/* ══════════════════════════════════════════════════════════════════
+   RECOVERY OUTPUT — CURAH / SAMPLE
+   ══════════════════════════════════════════════════════════════════ */
+function t5RecoveryAvailableRows(){
+  var stok=(window.SgcT4&&window.SgcT4.stokSimpan)||[];
+  return stok.map(function(it){
+    var dikemas=S5.histori.filter(function(h){return h.batchKode===it.batchKode;}).reduce(function(s,h){return s+(Number(h.totalGramDikemas)||0);},0);
+    var recovered=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(it.batchKode)>=0;}).reduce(function(s,h){
+      var src=(h.sources||[]).find(function(x){return x.batchKode===it.batchKode;}); return s+(src?Number(src.gram)||0:0);
+    },0);
+    var sisa=(Number(it.jumlahSiapKemas)||0)-dikemas-recovered;
+    var expiry=sgcGetKemasExpiryInfo(it);
+    var expired=expiry.date && expiry.date < new Date().toISOString().slice(0,10);
+    return {it:it,sisa:sisa,expiry:expiry,expired:expired};
+  }).filter(function(r){return r.sisa>0&&!r.expired;});
+}
+
+S5._recoverySelected=S5._recoverySelected||[];
+window.SgcT5.renderRecovery=function(){
+  var wrap=document.getElementById('t5-recovery-table-wrap');
+  var empty=document.getElementById('t5-recovery-empty');
+  if(!wrap) return;
+  var rows=t5RecoveryAvailableRows();
+  if(!rows.length){wrap.innerHTML='';if(empty)empty.style.display='block';window.SgcT5.batalRecovery();window.SgcT5.renderRecoveryHistory();return;}
+  if(empty)empty.style.display='none';
+  var groups={};
+  rows.forEach(function(r){
+    var key=(r.it.sku||'')+'|'+(r.it.namaProduk||'');
+    if(!groups[key])groups[key]={sku:r.it.sku||'',nama:r.it.namaProduk||'—',rows:[]};
+    groups[key].rows.push(r);
+  });
+  var html='<div style="font-size:10px;color:var(--text-muted);margin-bottom:7px">Pilih batch yang memiliki resep/produk sama untuk digabung menjadi satu output recovery.</div>';
+  Object.keys(groups).forEach(function(key){
+    var g=groups[key];
+    html+='<div style="border:.5px solid var(--border);border-radius:8px;margin-bottom:9px;overflow:hidden">'+
+      '<div style="padding:8px 10px;background:var(--surface-1);font-size:11px;font-weight:700">'+esc(g.nama)+' <code style="margin-left:6px">'+esc(g.sku)+'</code></div>'+
+      '<div style="overflow-x:auto"><table style="font-size:10px;width:100%;border-collapse:collapse"><thead><tr>'+
+      '<th style="padding:5px 7px;text-align:center">Pilih</th><th style="padding:5px 7px;text-align:left">Batch</th><th style="padding:5px 7px;text-align:right">Sisa</th><th style="padding:5px 7px;text-align:left">Expired</th></tr></thead><tbody>';
+    g.rows.forEach(function(r){
+      var checked=S5._recoverySelected.indexOf(r.it.batchKode)>=0?' checked':'';
+      html+='<tr>'+
+        '<td style="padding:5px 7px;text-align:center"><input type="checkbox" data-t5-recovery-batch="'+esc(r.it.batchKode)+'" onchange="SgcT5.toggleRecoveryBatch(this)"></td>'+
+        '<td style="padding:5px 7px"><code>'+esc(r.it.batchKode)+'</code></td>'+
+        '<td style="padding:5px 7px;text-align:right;font-weight:600;color:var(--green)">'+Number(r.sisa).toLocaleString('id-ID')+' gr</td>'+
+        '<td style="padding:5px 7px">'+(r.expiry.date?fmtDate(r.expiry.date):'—')+'</td>'+
+      '</tr>';
+    });
+    html+='</tbody></table></div></div>';
+  });
+  wrap.innerHTML=html;
+  wrap.querySelectorAll('[data-t5-recovery-batch]').forEach(function(cb){cb.checked=S5._recoverySelected.indexOf(cb.getAttribute('data-t5-recovery-batch'))>=0;});
+  window.SgcT5._refreshRecoveryForm();
+};
+
+window.SgcT5.toggleRecoveryBatch=function(cb){
+  var code=cb.getAttribute('data-t5-recovery-batch');
+  if(cb.checked){
+    var available=t5RecoveryAvailableRows();
+    var picked=available.find(function(r){return r.it.batchKode===code;});
+    var existing=S5._recoverySelected.length?available.find(function(r){return r.it.batchKode===S5._recoverySelected[0];}):null;
+    if(existing&&picked&&((existing.it.sku||'')!==(picked.it.sku||''))){
+      cb.checked=false;
+      alert('Batch tidak dapat digabung. Pilih hanya batch dengan produk/resep yang sama.');
+      return;
+    }
+    if(S5._recoverySelected.indexOf(code)<0)S5._recoverySelected.push(code);
+  }else{
+    S5._recoverySelected=S5._recoverySelected.filter(function(x){return x!==code;});
+  }
+  SgcT5._refreshRecoveryForm();
+};
+window.SgcT5._refreshRecoveryForm=function(){
+  var form=document.getElementById('t5-recovery-form');
+  var selected=S5._recoverySelected||[];
+  var rows=t5RecoveryAvailableRows().filter(function(r){return selected.indexOf(r.it.batchKode)>=0;});
+  if(!form){return;}
+  if(!rows.length){form.style.display='none';return;}
+  var total=rows.reduce(function(s,r){return s+r.sisa;},0);
+  form.style.display='block';
+  var sel=document.getElementById('t5-recovery-selected');
+  if(sel)sel.innerHTML='<strong>'+esc(rows[0].it.namaProduk||'Produk')+'</strong> · '+selected.length+' batch dipilih · total tersedia <strong>'+Number(total).toLocaleString('id-ID')+' gr</strong>';
+  var qty=document.getElementById('t5-recovery-qty');
+  if(qty){qty.max=String(total);if(!qty.value)qty.value=total;}
+  var q=qty?Number(qty.value)||0:0;
+  var preview=document.getElementById('t5-recovery-preview');
+  if(preview)preview.textContent='Output akan mengambil '+Number(q).toLocaleString('id-ID')+' gr dari batch terpilih. Jika beberapa batch digabung, expired output mengikuti expired paling awal untuk keamanan.';
+};
+window.SgcT5.batalRecovery=function(){
+  S5._recoverySelected=[];
+  var form=document.getElementById('t5-recovery-form');if(form)form.style.display='none';
+  var q=document.getElementById('t5-recovery-qty');if(q)q.value='';
+};
+window.SgcT5.buatRecovery=function(){
+  var rows=t5RecoveryAvailableRows().filter(function(r){return (S5._recoverySelected||[]).indexOf(r.it.batchKode)>=0;});
+  if(!rows.length){alert('Pilih minimal 1 batch recovery.');return;}
+  var qty=Number(document.getElementById('t5-recovery-qty').value)||0;
+  var total=rows.reduce(function(s,r){return s+r.sisa;},0);
+  if(qty<=0){alert('Jumlah recovery harus lebih dari 0 gram.');return;}
+  if(qty>total+0.0001){alert('Jumlah recovery melebihi total sisa batch terpilih.');return;}
+  var operator=(document.getElementById('t5-recovery-operator').value||'').trim();
+  if(!operator){alert('Nama operator recovery wajib diisi.');return;}
+  var type=document.getElementById('t5-recovery-type').value||'curah';
+  /* Alokasi FIFO berdasarkan urutan batch yang dipilih. Tidak mengubah histori lama. */
+  var remaining=qty, sources=[];
+  rows.slice().sort(function(a,b){return String(a.it.batchKode).localeCompare(String(b.it.batchKode));}).forEach(function(r){
+    if(remaining<=0)return;
+    var take=Math.min(r.sisa,remaining);
+    if(take>0){sources.push({batchKode:r.it.batchKode,gram:take});remaining-=take;}
+  });
+  var expiryDates=rows.map(function(r){return r.expiry.date;}).filter(Boolean).sort();
+  var record={
+    id:'REC-'+Date.now(),type:type,sku:rows[0].it.sku||'',namaProduk:rows[0].it.namaProduk||'—',
+    gram:qty,batchKodes:sources.map(function(x){return x.batchKode;}),sources:sources,
+    waktu:t5NowLocal(),operator:operator,tglExpired:expiryDates.length?expiryDates[0]:'',
+    status:type==='curah'?'tersedia_curah':'tersedia_sample'
+  };
+  S5.recovery.push(record);t5RecoverySave();
+  S5._recoverySelected=[];
+  var op=document.getElementById('t5-recovery-operator');if(op)op.value='';
+  var q=document.getElementById('t5-recovery-qty');if(q)q.value='';
+  window.SgcT5.renderRecovery();window.SgcT5.renderRecoveryHistory();window.SgcT5.refreshStokTersedia();
+  SgcUxAction.flash((type==='curah'?'Produk curah':'Produk sample')+' berhasil dibuat dari sisa batch.','success');
+};
+window.SgcT5.renderRecoveryHistory=function(){
+  var el=document.getElementById('t5-recovery-history');if(!el)return;
+  if(!S5.recovery.length){el.innerHTML='<div style="font-size:10px;color:var(--text-muted)">Belum ada recovery output.</div>';return;}
+  el.innerHTML=S5.recovery.slice().reverse().map(function(r){
+    var type=r.type==='curah'?'Produk Curah':'Produk Sample';
+    return '<div style="padding:7px 9px;border:.5px solid var(--border);border-radius:7px;margin-bottom:5px;font-size:10px">'+
+      '<div style="font-weight:700">'+type+' — '+esc(r.namaProduk)+' <span class="badge '+(r.type==='curah'?'b-green':'b-blue')+'" style="margin-left:5px">'+Number(r.gram).toLocaleString('id-ID')+' gr</span></div>'+
+      '<div style="color:var(--text-muted);margin-top:3px">Batch: '+(r.batchKodes||[]).map(esc).join(', ')+' · '+t5TsLabel(r.waktu)+' · Operator: '+esc(r.operator)+(r.tglExpired?' · Expired '+fmtDate(r.tglExpired):'')+'</div>'+
+    '</div>';
+  }).join('');
+};
+
 window.SgcT5.goT5=function(btn){
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
   var pg=document.getElementById('page-t5'); if(pg) pg.classList.add('active');
@@ -5896,6 +6450,8 @@ window.SgcT5.goT5=function(btn){
   var ts=document.getElementById('page-sub'); if(ts) ts.textContent='Packaging produk jadi dari stok Tahap 4';
   window.SgcT5.renderHistori();
   window.SgcT5.refreshStokTersedia();
+  window.SgcT5.renderRecovery();
+  window.SgcT5.renderRecoveryHistory();
 };
 
 (function patchGoToForT5(){
@@ -8417,8 +8973,9 @@ function t6HitungStok(){
   ((window.SgcT5&&window.SgcT5.histori)||[]).forEach(function(h){
     (h.items||[]).forEach(function(it){
       var key=h.batchKode+'|'+it.skuCode;
-      if(!map[key]) map[key]={batchKode:h.batchKode, skuCode:it.skuCode, namaProduk:it.namaProduk, satuan:it.satuan, dikemas:0, dikirim:0, jenisPenyimpanan:h.jenisPenyimpananAsal||''};
+      if(!map[key]) map[key]={batchKode:h.batchKode, skuCode:it.skuCode, namaProduk:it.namaProduk, satuan:it.satuan, dikemas:0, dikirim:0, jenisPenyimpanan:h.jenisPenyimpananAsal||'', tglExpired:h.tglExpired||''};
       map[key].dikemas += (it.jumlah||0);
+      if(h.tglExpired) map[key].tglExpired=h.tglExpired;
       /* Kalau ada beberapa histori kemas untuk kombinasi yang sama, tandai khusus asal jika salah satunya Chiller/Freezer */
       if((h.jenisPenyimpananAsal==='chiller'||h.jenisPenyimpananAsal==='freezer') && map[key].jenisPenyimpanan!=='chiller' && map[key].jenisPenyimpanan!=='freezer'){
         map[key].jenisPenyimpanan=h.jenisPenyimpananAsal;
@@ -8433,8 +8990,8 @@ function t6HitungStok(){
   });
   return Object.keys(map).map(function(k){
     var x=map[k];
-    return {batchKode:x.batchKode, skuCode:x.skuCode, namaProduk:x.namaProduk, satuan:x.satuan,
-            dikemas:x.dikemas, dikirim:x.dikirim, tersedia:x.dikemas-x.dikirim, jenisPenyimpanan:x.jenisPenyimpanan};
+    return {batchKode:x.batchKode, skuCode:x.skuCode, namaProduk:x.namaProduk, satuan:'pcs',
+            dikemas:x.dikemas, dikirim:x.dikirim, tersedia:x.dikemas-x.dikirim, jenisPenyimpanan:x.jenisPenyimpanan, tglExpired:x.tglExpired||''};
   });
 }
 
@@ -8536,7 +9093,7 @@ window.SgcT6.renderAvailable = function(){
   });
   var rows=t6HitungStok().map(function(x){
     var sisa=x.tersedia-(draftMap[x.batchKode+'|'+x.skuCode]||0);
-    return {batchKode:x.batchKode,skuCode:x.skuCode,namaProduk:x.namaProduk,satuan:x.satuan,sisa:sisa,jenisPenyimpanan:x.jenisPenyimpanan};
+    return {batchKode:x.batchKode,skuCode:x.skuCode,namaProduk:x.namaProduk,satuan:'pcs',sisa:sisa,jenisPenyimpanan:x.jenisPenyimpanan};
   }).filter(function(x){ return x.sisa>0.0001; });
 
   if(!rows.length){
@@ -8556,7 +9113,7 @@ window.SgcT6.renderAvailable = function(){
        Gudang". Prefill dari S6.batchMeta kalau sudah pernah disimpan. */
     var metaKey=x.batchKode+'|'+x.skuCode;
     var meta=S6.batchMeta[metaKey]||null;
-    var expVal=meta?meta.tglExpired:'';
+    var expVal=x.tglExpired||(meta?meta.tglExpired:'');
     var expDisplay='';
     if(expVal){ var pp=expVal.split('-'); expDisplay=pp[2]+'/'+pp[1]+'/'+pp[0]; }
     var qcVal=meta?(String(meta.namaQC||'').replace(/"/g,'&quot;')):'';
@@ -8570,14 +9127,11 @@ window.SgcT6.renderAvailable = function(){
       '<td>'+jenisBadge+'</td>'+
       '<td style="text-align:right">'+x.sisa.toLocaleString('id-ID')+'</td>'+
       '<td>'+x.satuan+'</td>'+
-      '<td><div style="display:flex;gap:3px;align-items:center">'+
-        '<input type="text" class="t6-inp-exp" placeholder="DD/MM/YYYY" value="'+expDisplay+'" inputmode="numeric" style="width:88px;padding:5px 7px;border:.5px solid var(--border-strong);border-radius:5px;font-size:11px;font-family:inherit">'+
-        '<button type="button" class="icn-btn" style="padding:4px 5px;border:.5px solid var(--border-strong);border-radius:5px" onclick="SgcT6.bukaKalenderExp(this)" title="Pilih dari kalender"><i class="ti ti-calendar"></i></button>'+
-      '</div></td>'+
+      '<td><div style="font-weight:600;color:var(--green);font-size:11px">'+(x.tglExpired?fmtDate(x.tglExpired):'—')+'</div><div style="font-size:9px;color:var(--text-muted);margin-top:2px">Otomatis dari Resep</div></td>'+
       '<td><input type="text" class="t6-inp-qc" placeholder="Nama staf QC" value="'+qcVal+'" style="width:130px;padding:5px 7px;border:.5px solid var(--border-strong);border-radius:5px;font-size:11px;font-family:inherit"></td>'+
       '<td>'+
         '<div style="display:flex;gap:4px">'+
-          '<button class="btn sm" onclick="SgcT6.simpanMeta(this)" title="Simpan Tgl Expired &amp; Nama QC"><i class="ti ti-device-floppy"></i> Simpan</button>'+
+          '<button class="btn sm" onclick="SgcT6.simpanMeta(this)" title="Simpan Expired Otomatis &amp; Nama QC"><i class="ti ti-device-floppy"></i> Simpan</button>'+
           '<button class="btn sm success" onclick="SgcT6.bukaPopupKirim(this)" title="Kirim ke Gudang"><i class="ti ti-truck-delivery"></i></button>'+
         '</div>'+
         statusBadge+
@@ -8592,11 +9146,10 @@ window.SgcT6.renderAvailable = function(){
 window.SgcT6.simpanMeta=function(btn){
   var tr=btn.closest('tr');
   var batchKode=tr.dataset.batch, skuCode=tr.dataset.sku;
-  var expRaw=tr.querySelector('.t6-inp-exp').value;
+  var rowData=t6HitungStok().find(function(x){return x.batchKode===batchKode&&x.skuCode===skuCode;});
+  var exp=rowData?rowData.tglExpired:'';
   var qc=(tr.querySelector('.t6-inp-qc').value||'').trim();
-  if(!expRaw){alert('Tanggal expired untuk batch '+batchKode+' wajib diisi.');return;}
-  var exp=t6ParseTglManual(expRaw);
-  if(exp===null){alert('Format tanggal expired untuk batch '+batchKode+' tidak dikenali.\nKetik/paste dengan format DD/MM/YYYY (mis. 25/12/2026), atau klik ikon kalender.');return;}
+  if(!exp){alert('Tanggal expired batch '+batchKode+' belum tersedia. Periksa pengaturan masa simpan pada Resep Master → Tutorial → Tahap Pengemasan.');return;}
   if(!qc){alert('Nama pegawai QC untuk batch '+batchKode+' wajib diisi.');return;}
   var key=batchKode+'|'+skuCode;
   S6.batchMeta[key]={tglExpired:exp,namaQC:qc};
@@ -8637,7 +9190,7 @@ window.SgcT6.pilihTglDariKalender=function(native){
 window.SgcT6.bukaPopupKirim=function(btn){
   if(!S6._wip){ alert('Buka ulang halaman Tahap 6 terlebih dahulu.'); return; }
   var tr=btn.closest('tr');
-  var batchKode=tr.dataset.batch, skuCode=tr.dataset.sku, namaProduk=tr.dataset.nama, satuan=tr.dataset.satuan;
+  var batchKode=tr.dataset.batch, skuCode=tr.dataset.sku, namaProduk=tr.dataset.nama, satuan='pcs';
   var jenisPenyimpanan=tr.dataset.jenis||'';
   var tersedia=parseFloat(tr.dataset.tersedia)||0;
   var key=batchKode+'|'+skuCode;
@@ -8670,7 +9223,7 @@ window.SgcT6.konfirmasiKirimPopup=function(){
   if(jumlah>ctx.tersedia+0.0001){alert('Jumlah melebihi stok tersedia ('+ctx.tersedia.toLocaleString('id-ID')+' '+ctx.satuan+').');return;}
   S6._wip.items.push({
     batchKode:ctx.batchKode, skuCode:ctx.skuCode, namaProduk:ctx.namaProduk,
-    jumlah:jumlah, satuan:ctx.satuan, tglExpired:ctx.meta.tglExpired, namaQC:ctx.meta.namaQC,
+    jumlah:jumlah, satuan:'pcs', tglExpired:ctx.meta.tglExpired, namaQC:ctx.meta.namaQC,
     jenisPenyimpanan:ctx.jenisPenyimpanan
   });
   closeModal('modal-t6-kirim');
@@ -8725,7 +9278,7 @@ window.SgcT6.renderDraft=function(){
       '<td>'+it.namaProduk+'</td>'+
       '<td>'+jenisBadge+'</td>'+
       '<td style="text-align:right">'+Number(it.jumlah).toLocaleString('id-ID')+'</td>'+
-      '<td>'+it.satuan+'</td>'+
+      '<td>pcs</td>'+
       '<td>'+fmtDate(it.tglExpired)+'</td>'+
       '<td>'+it.namaQC+'</td>'+
       '<td><button class="btn sm danger" onclick="SgcT6.hapusDariDraft('+i+')"><i class="ti ti-trash"></i></button></td>'+
@@ -8827,7 +9380,7 @@ window.SgcT6.cetakSPB=function(record){
     var jenisLabel=khusus?(window.T4_JENIS_LABEL[it.jenisPenyimpanan]||it.jenisPenyimpanan):'Suhu Ruang';
     return '<tr'+(khusus?' class="row-top"':'')+'><td><code>'+it.batchKode+'</code></td><td>'+it.skuCode+'</td><td>'+it.namaProduk+'</td>'+
       '<td>'+(khusus?'<span class="tag-top">\u26A0 '+jenisLabel+'</span>':jenisLabel)+'</td>'+
-      '<td style="text-align:right">'+Number(it.jumlah).toLocaleString('id-ID')+'</td><td>'+it.satuan+'</td>'+
+      '<td style="text-align:right">'+Number(it.jumlah).toLocaleString('id-ID')+'</td><td>pcs</td>'+
       '<td>'+fmtDate(it.tglExpired)+'</td><td>'+it.namaQC+'</td></tr>';
   }).join('');
   var topBannerHtml=top.perlu?
@@ -9489,7 +10042,10 @@ window.SgcQuickPick.renderT5Saran=function(){
   var histori=(window.SgcT5 && window.SgcT5.histori)||[];
   var rows=stok.filter(function(it){
     var dikemas=histori.filter(function(h){return h.batchKode===it.batchKode;}).reduce(function(s,h){return s+(h.totalGramDikemas||0);},0);
-    var sisa=(it.jumlahSiapKemas||0)-dikemas;
+    var recovered=(window.SgcT5&&window.SgcT5.recovery||[]).filter(function(h){return (h.batchKodes||[]).indexOf(it.batchKode)>=0;}).reduce(function(s,h){
+      var src=(h.sources||[]).find(function(x){return x.batchKode===it.batchKode;}); return s+(src?Number(src.gram)||0:0);
+    },0);
+    var sisa=(it.jumlahSiapKemas||0)-dikemas-recovered;
     if(sisa<=0) return false;
     return !q || (it.batchKode||'').toLowerCase().includes(q) || (it.namaProduk||'').toLowerCase().includes(q);
   });
@@ -10165,8 +10721,20 @@ function getTasks(){
   });
 }
 function taskAllowed(t){
-  var map={t1:'mulai',t2:'t2',t3:'t3',t3finish:'t3',t4:'t4',t5:'t5',t6:'t6'};
-  return canNav(map[t.key]||'dashboard');
+  var a=account();
+  if(!a||!t) return false;
+  if(isOwner(a)) return true;
+  var u=a.username||'', r=a.role||'';
+  /* Pekerjaan Saya hanya menampilkan pekerjaan yang benar-benar menjadi
+     tanggung jawab role. Tidak ada lagi daftar produksi umum dengan
+     tombol 'Terbatas'. */
+  if(u==='operator') return ['t1','t2','t3','t3finish'].indexOf(t.key)!==-1;
+  if(u==='qc_packing') return ['t4','t5'].indexOf(t.key)!==-1;
+  if(u==='inventory') return t.key==='t6';
+  /* Production Manager: pusat kerja = perencanaan/monitoring. Data
+     produksi detail tetap dapat dipantau melalui menu yang berhak. */
+  if(u==='produksi_mgr'||r==='kepala'||r==='produksi_mgr') return false;
+  return false;
 }
 function taskHtml(t){
   var allowed=taskAllowed(t);
@@ -10176,6 +10744,7 @@ function taskHtml(t){
   return '<div class="sgc-task">'+
     '<div class="sgc-task-main"><div class="sgc-task-icon"><i class="ti '+esc(t.icon)+'"></i></div><div class="sgc-task-copy">'+
     '<div class="sgc-task-action">'+esc(t.action)+'</div><div class="sgc-task-product">'+esc(t.product)+'</div>'+
+    '<div style="font-size:10px;color:#55705c;margin-bottom:4px">Tugas Anda sekarang</div>'+
     '<div class="sgc-task-meta">Nomor Induk: <code>'+esc(t.noDok)+'</code><br>'+esc(t.meta)+'</div></div></div>'+button+'</div>';
 }
 
@@ -10291,13 +10860,17 @@ function render(){
   if(!now||!next) return;
   var tasks=getTasks(), actionable=tasks.filter(taskAllowed);
   if(count) count.textContent=actionable.length+' pekerjaan';
-  if(!tasks.length){
-    now.innerHTML='<div class="sgc-home-empty"><i class="ti ti-circle-check"></i><strong>Semua pekerjaan estão concluídos.</strong><br><span>Tidak ada pekerjaan produksi yang menunggu.</span></div>';
+  if(!actionable.length){
+    var a=account();
+    var msg=isPlanningRole(a)
+      ? '<div class="sgc-home-empty"><i class="ti ti-calendar-check"></i><strong>Tidak ada pekerjaan lapangan yang menunggu.</strong><br><span>Gunakan tombol <b>Buat Rencana Produksi</b> untuk memulai pekerjaan berikutnya.</span></div>'
+      : '<div class="sgc-home-empty"><i class="ti ti-circle-check"></i><strong>Semua pekerjaan Anda sudah selesai.</strong><br><span>Sistem akan menampilkan pekerjaan baru saat tersedia.</span></div>';
+    now.innerHTML=msg;
     next.innerHTML='';
     return;
   }
-  now.innerHTML=taskHtml(tasks[0]);
-  var rest=tasks.slice(1,9);
+  now.innerHTML=taskHtml(actionable[0]);
+  var rest=actionable.slice(1,9);
   next.innerHTML=rest.length?rest.map(function(t){
     var ok=taskAllowed(t);
     return '<div class="sgc-next-row"><div class="sgc-next-dot"></div><div class="sgc-next-copy"><strong>'+esc(t.action)+' — '+esc(t.product)+'</strong><span>'+esc(t.noDok)+'</span></div>'+
@@ -10327,6 +10900,7 @@ function installGoTo(){
   var old=W.goTo;
   function wrapped(id,el){
     if(id==='pekerjaan'){
+      var app=document.querySelector('.app'); if(app) app.style.visibility='';
       ensurePageAndNav(); ensureNavPermission();
       document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active');});
       document.querySelectorAll('.nav-item').forEach(function(n){n.classList.remove('active');});
@@ -10343,15 +10917,393 @@ function installGoTo(){
 }
 
 var last=null;
+var lastWorkSignature=null;
+var workBooted=false;
+function workSignature(){
+  return getTasks().filter(taskAllowed).map(function(t){return t.noDok+'|'+t.key+'|'+(t.batchKode||'')}).join(';;');
+}
+function showNextJobToast(){
+  var ts=getTasks().filter(taskAllowed);
+  if(!ts.length) return;
+  var t=ts[0];
+  var old=document.getElementById('sgc-next-job-toast'); if(old) old.remove();
+  var el=document.createElement('div');
+  el.id='sgc-next-job-toast';
+  el.style.cssText='position:fixed;right:22px;bottom:22px;z-index:10001;background:#fff;border:1px solid #cfe0d2;border-left:4px solid #166534;border-radius:12px;padding:13px 14px;box-shadow:0 8px 28px rgba(15,77,40,.18);min-width:280px;max-width:380px';
+  el.innerHTML='<div style="font-size:11px;font-weight:700;color:#166534;letter-spacing:.4px;text-transform:uppercase">Pekerjaan berikutnya siap</div>'+
+    '<div style="font-size:14px;font-weight:750;color:#202520;margin:4px 0">'+esc(t.action)+'</div>'+
+    '<div style="font-size:11px;color:#69736c">'+esc(t.product)+' · '+esc(t.noDok)+'</div>'+
+    '<div style="display:flex;gap:7px;margin-top:10px">'+
+      '<button class="btn primary sm" id="sgc-next-job-open"><i class="ti ti-arrow-right"></i>Buka pekerjaan</button>'+
+      '<button class="btn sm" id="sgc-next-job-close">Nanti</button>'+
+    '</div>';
+  document.body.appendChild(el);
+  document.getElementById('sgc-next-job-open').onclick=function(){W.SgcWork.run(t.noDok,t.key);el.remove();};
+  document.getElementById('sgc-next-job-close').onclick=function(){el.remove();};
+  setTimeout(function(){if(document.body.contains(el)) el.remove();},12000);
+}
 function boot(){
   ensurePageAndNav(); installGoTo(); ensureNavPermission();
   var a=account();
-  if(a!==last){last=a;setTimeout(render,250);}
+  if(a!==last){last=a;lastWorkSignature=workSignature();setTimeout(render,250);}
+  var sig=workSignature();
+  if(workBooted && lastWorkSignature!==null && sig!==lastWorkSignature){
+    /* Perubahan daftar tugas biasanya berarti pekerjaan sebelumnya selesai
+       atau pekerjaan baru masuk dari perangkat lain. Beri staf tawaran tahap berikutnya,
+       tetapi jangan memaksa navigasi otomatis. */
+    if(account() && document.getElementById('login-screen') && document.getElementById('login-screen').classList.contains('hidden')) showNextJobToast();
+    render();
+  }
+  lastWorkSignature=sig;
+  workBooted=true;
   if(document.getElementById('page-pekerjaan')&&document.getElementById('page-pekerjaan').classList.contains('active')) render();
 }
 boot();
 setInterval(boot,900);
 })();
 </script>
+
+
+<!-- SASAGU UX V5 — SAFE ROLE WORKFLOW + GREEN THEME OVERRIDE -->
+<style>
+:root{--brand:#166534;--brand-light:#E8F5E9;--brand-mid:#A5D6A7;--brand-dark:#0F4D28;--primary:#166534;--primary-dark:#0F4D28}
+.nav-item.active,.btn.primary{background:#166534!important;border-color:#166534!important}
+.btn.primary:hover{background:#0F4D28!important;border-color:#0F4D28!important}
+.login-btn,.lg-btn{background:linear-gradient(135deg,#166534,#0F4D28)!important}
+.lg-logo-mark{background:linear-gradient(135deg,#166534,#2E7D32)!important;box-shadow:0 6px 16px rgba(22,101,52,.28)!important}
+.lg-hero h1 span,.lg-feat i{color:#A5D6A7!important}
+.sgc-task-icon{background:#E8F5E9!important;color:#166534!important}
+.sgc-task-action,.sgc-nav-btn.active{color:#166534!important}
+.sgc-next-dot{background:#6aa47a!important}
+</style>
+<script>
+(function(){
+  /* Pastikan nav dinamis mengikuti hak akses role tanpa mengganggu modul asli. */
+  function syncRoleNav(){
+    var a=window._sgcCurrentAccount; if(!a) return;
+    var map={
+      'nav-pekerjaan':true,
+      'nav-t2':a.username==='owner'||a.username==='operator'||a.username==='produksi_mgr',
+      'nav-t3':a.username==='owner'||a.username==='operator'||a.username==='produksi_mgr',
+      'nav-t4':a.username==='owner'||a.username==='qc_packing',
+      'nav-t5':a.username==='owner'||a.username==='qc_packing',
+      'nav-t6':a.username==='owner'||a.username==='inventory',
+      'nav-t6-audit':a.username==='owner'
+    };
+    Object.keys(map).forEach(function(id){var e=document.getElementById(id);if(e)e.style.display=map[id]?'':'none';});
+    var p=document.getElementById('page-pekerjaan'); if(p) p.style.display='';
+  }
+  syncRoleNav();
+  setInterval(syncRoleNav,1000);
+})();
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   SASAGU — THERMAL LABEL & TRACEABILITY ADDON
+   - Mempertahankan window.print()/printModal() untuk PC.
+   - Menambahkan jalur Cetak Thermal 58/80 mm dari HP/browser.
+   - 2 level barcode: Barcode Induk + Barcode Objek/Tahap.
+   - Scan tetap opsional; belum dibuat mandatory.
+   ══════════════════════════════════════════════════════════════════ */
+(function(){
+  'use strict';
+  var LS='sgc_thermal_print_settings_v1';
+  var defaults={width:'58',printerName:'',autoPrint:true,transport:'auto',bridgeUrl:'http://localhost:9100'};
+  function load(){try{return Object.assign({},defaults,JSON.parse(localStorage.getItem(LS)||'{}'));}catch(e){return Object.assign({},defaults);}}
+  function save(v){try{localStorage.setItem(LS,JSON.stringify(v));}catch(e){}}
+  window.SgcThermal={settings:load()};
+
+  function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+  function barcode(id){return (id&&typeof window.genBarcode==='function')?window.genBarcode(id):'';}
+  function row(k,v){return '<div class="sgc-th-row"><span>'+esc(k)+'</span><strong>'+esc(v||'—')+'</strong></div>';}
+  function nowLabel(){var d=new Date();return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+
+  /* ───────────────────────────────────────────────────────────────
+     UNIVERSAL THERMAL TRANSPORT
+     - Android Bridge: Bluetooth Classic / SPP ESC/POS via localhost
+     - Web Bluetooth: BLE ESC/POS direct from Chromium on Android
+     - Browser: legacy window.print() fallback (PC tetap aman)
+     Catatan: browser Android tidak diberi akses Bluetooth Classic SPP secara
+     langsung. Untuk printer Kassen/Xprinter/HOIN sejenis yang memakai SPP,
+     gunakan Android print bridge; BLE bisa dicoba langsung via Web Bluetooth.
+     ─────────────────────────────────────────────────────────────── */
+  function bridgeUrl(){return String((window.SgcThermal.settings||defaults).bridgeUrl||'http://localhost:9100').replace(/\/$/,'');}
+  async function bridgeHealth(){
+    try{var r=await fetch(bridgeUrl()+'/health',{method:'GET',cache:'no-store',signal:AbortSignal.timeout(1500)});if(!r.ok)return null;return await r.json();}catch(e){return null;}
+  }
+  function cleanText(v){return String(v==null?'':v).replace(/[\u0000-\u001f\u007f]/g,' ').trim();}
+  function bridgePayload(data){
+    var blocks=[]; blocks.push({type:'text',text:'SASAGU',align:'center',bold:true,size:'large'});
+    blocks.push({type:'text',text:cleanText(data.title||'LABEL PRODUKSI'),align:'center',bold:true});
+    if(data.subtitle)blocks.push({type:'text',text:cleanText(data.subtitle),align:'center'});
+    blocks.push({type:'divider'});
+    (data.rows||[]).forEach(function(r){blocks.push({type:'row',left:cleanText(r[0]),right:cleanText(r[1]||'—')});});
+    (data.barcodes||[]).filter(Boolean).forEach(function(c,i){
+      /* ESC/POS bridges yang mendukung barcode menerima blok barcode.
+         Bila bridge tidak mengenal blok ini, browser fallback tetap tersedia. */
+      blocks.push({type:'text',text:cleanText((data.barcodeLabels&&data.barcodeLabels[i])||'BARCODE'),align:'center',bold:true});
+      blocks.push({type:'barcode',data:cleanText(c),format:'CODE39',height:60,width:2,align:'center',hri:true});
+      blocks.push({type:'text',text:cleanText(c),align:'center'});
+    });
+    blocks.push({type:'feed',lines:3});
+    return {cut:true,content:blocks};
+  }
+  async function bridgePrint(data){
+    var h=await bridgeHealth(); if(!h)return {ok:false,reason:'bridge-unavailable'};
+    try{
+      var r=await fetch(bridgeUrl()+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(bridgePayload(data)),signal:AbortSignal.timeout(5000)});
+      var j={}; try{j=await r.json();}catch(e){}
+      return {ok:r.ok,health:h,result:j};
+    }catch(e){return {ok:false,reason:'bridge-error',error:e};}
+  }
+  var BLE_UUIDS=['0000ffe0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','000018f0-0000-1000-8000-00805f9b34fb','0000ae30-0000-1000-8000-00805f9b34fb'];
+  var BLE_CHAR_UUIDS=['0000ffe1-0000-1000-8000-00805f9b34fb','0000ff02-0000-1000-8000-00805f9b34fb','00002af1-0000-1000-8000-00805f9b34fb','0000ae01-0000-1000-8000-00805f9b34fb'];
+  window.SgcThermal.ble={device:null,characteristic:null,connected:false};
+  async function bleConnect(){
+    if(!navigator.bluetooth)throw new Error('Web Bluetooth tidak tersedia. Gunakan Chrome Android/Chromium atau Android Bridge.');
+    var dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:BLE_UUIDS});
+    var server=await dev.gatt.connect(); var services=await server.getPrimaryServices(); var ch=null;
+    for(var si=0;si<services.length&&!ch;si++){var cs=await services[si].getCharacteristics();for(var ci=0;ci<cs.length;ci++){var c=cs[ci];if(c.properties.write||c.properties.writeWithoutResponse){ch=c;break;}}}
+    if(!ch)throw new Error('Printer BLE terhubung tetapi characteristic WRITE tidak ditemukan.');
+    window.SgcThermal.ble={device:dev,characteristic:ch,connected:true};
+    dev.addEventListener('gattserverdisconnected',function(){window.SgcThermal.ble.connected=false;window.SgcThermal.ble.characteristic=null;updatePrinterStatus();});
+    updatePrinterStatus(); return dev;
+  }
+  function u8(a){return new Uint8Array(a);}
+  function escposText(t){var enc=new TextEncoder();return enc.encode(cleanText(t)+'\\n');}
+  function concatBytes(parts){var n=parts.reduce(function(a,b){return a+b.length;},0),o=new Uint8Array(n),p=0;parts.forEach(function(x){o.set(x,p);p+=x.length;});return o;}
+  function barcodeBytes(code){
+    var enc=new TextEncoder(),d=enc.encode(cleanText(code));
+    /* GS k CODE39, terminated by NUL. */
+    return concatBytes([u8([0x1d,0x68,60]),u8([0x1d,0x77,2]),u8([0x1d,0x48,2]),u8([0x1d,0x6b,0x04]),d,u8([0x00,0x0a])]);
+  }
+  function blePayload(data){
+    var parts=[u8([0x1b,0x40]),u8([0x1b,0x61,1]),u8([0x1b,0x45,1]),escposText('SASAGU'),u8([0x1b,0x45,0]),escposText(data.title||'LABEL PRODUKSI')];
+    if(data.subtitle)parts.push(escposText(data.subtitle));
+    parts.push(escposText('--------------------------------'));
+    (data.rows||[]).forEach(function(r){parts.push(escposText(cleanText(r[0])+': '+cleanText(r[1]||'—')));});
+    (data.barcodes||[]).filter(Boolean).forEach(function(c,i){parts.push(u8([0x1b,0x61,1]),escposText((data.barcodeLabels&&data.barcodeLabels[i])||'BARCODE'),barcodeBytes(c),escposText(c));});
+    parts.push(u8([0x1b,0x61,1]),escposText(''),escposText(''),u8([0x1d,0x56,0x00]));
+    return concatBytes(parts);
+  }
+  async function blePrint(data){
+    if(!window.SgcThermal.ble.connected||!window.SgcThermal.ble.characteristic)return {ok:false,reason:'ble-not-connected'};
+    var c=window.SgcThermal.ble.characteristic,bytes=blePayload(data),chunk=180;
+    for(var i=0;i<bytes.length;i+=chunk){var part=bytes.slice(i,Math.min(i+chunk,bytes.length));if(c.writeValueWithoutResponse)await c.writeValueWithoutResponse(part);else await c.writeValue(part);await new Promise(function(r){setTimeout(r,25);});}
+    return {ok:true};
+  }
+  function updatePrinterStatus(){
+    var el=document.getElementById('sgc-thermal-status');if(!el)return;
+    var b=window.SgcThermal.ble||{};el.innerHTML=b.connected?'<span class="badge b-green">BLE terhubung</span>':'<span class="badge b-gray">Belum terhubung</span>';
+    var ep=document.getElementById('sgc-thermal-bridge-status');if(ep)ep.textContent='Memeriksa…';
+    bridgeHealth().then(function(h){if(ep)ep.textContent=h?'Bridge OK · '+(h.printer&&h.printer.connected?'printer terhubung':'printer belum terhubung'):'Bridge tidak ditemukan';});
+  }
+  window.SgcThermal.connectBluetooth=async function(){try{var d=await bleConnect();alert('Printer BLE terhubung: '+(d.name||'tanpa nama'));}catch(e){alert('Gagal menghubungkan Bluetooth: '+e.message);}updatePrinterStatus();};
+  window.SgcThermal.testConnection=async function(){updatePrinterStatus();var h=await bridgeHealth();if(h)return alert('Bridge OK. '+(h.printer&&h.printer.connected?'Printer terhubung.':'Bridge aktif, tetapi printer belum terhubung.'));if(window.SgcThermal.ble.connected)return alert('Bluetooth BLE terhubung.');alert('Belum ada koneksi printer. Untuk printer Bluetooth Classic seperti Kassen/Xprinter, pasangkan di Android lalu gunakan Android print bridge.');};
+
+  window.SgcThermal.print=function(data){
+    data=data||{};
+    var s=window.SgcThermal.settings||defaults;
+    var w=s.width==='80'?'80mm':'58mm';
+    var codes=Array.isArray(data.barcodes)?data.barcodes.filter(Boolean):[];
+    var html='<div class="sgc-th-label">'+
+      '<div class="sgc-th-brand">SASAGU</div>'+
+      '<div class="sgc-th-title">'+esc(data.title||'LABEL PRODUKSI')+'</div>'+ 
+      (data.subtitle?'<div class="sgc-th-sub">'+esc(data.subtitle)+'</div>':'');
+    if(data.rows&&data.rows.length){html+='<div class="sgc-th-data">';data.rows.forEach(function(r){html+=row(r[0],r[1]);});html+='</div>';}
+    if(codes.length){
+      html+='<div class="sgc-th-codes">';
+      codes.forEach(function(c,i){html+='<div class="sgc-th-code-title">'+esc((data.barcodeLabels&&data.barcodeLabels[i])||('BARCODE '+(i+1)))+'</div><div class="sgc-th-barcode">'+barcode(c)+'<div>'+esc(c)+'</div></div>';});
+      html+='</div>';
+    }
+    html+='<div class="sgc-th-footer">Dicetak '+nowLabel()+'</div></div>';
+    var win=window.open('','_blank','width=420,height=720');
+    if(!win){alert('Popup diblokir browser. Izinkan popup untuk mencetak label thermal.');return;}
+    win.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Label Thermal</title><style>'+ 
+      '@page{size:'+w+' auto;margin:0}'+
+      '*{box-sizing:border-box}body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif}'+
+      '.sgc-th-label{width:'+w+';padding:3mm 2.5mm 2mm;margin:0 auto;font-size:10px;overflow:hidden}'+
+      '.sgc-th-brand{text-align:center;font-weight:900;font-size:15px;letter-spacing:2px}.sgc-th-title{text-align:center;font-size:11px;font-weight:800;letter-spacing:.8px;margin-top:1mm}.sgc-th-sub{text-align:center;font-size:8px;color:#555;margin-top:1mm}.sgc-th-data{margin-top:2mm;border-top:1px dashed #777}.sgc-th-row{display:flex;justify-content:space-between;gap:5px;padding:1.2mm 0;border-bottom:1px dotted #bbb;line-height:1.25}.sgc-th-row span{color:#555}.sgc-th-row strong{text-align:right;max-width:65%;word-break:break-word}.sgc-th-codes{margin-top:2mm}.sgc-th-code-title{text-align:center;font-size:8px;font-weight:800;letter-spacing:1px;margin:1.5mm 0 .5mm}.sgc-th-barcode{text-align:center;font-family:monospace;font-size:8px;letter-spacing:1px;overflow:hidden}.sgc-th-barcode svg{display:block;width:100%;height:auto;max-height:18mm;margin:0 auto .5mm}.sgc-th-footer{text-align:center;font-size:7px;color:#777;margin-top:2mm;border-top:1px dashed #aaa;padding-top:1mm}'+
+      '@media print{html,body{width:'+w+';margin:0;padding:0}.sgc-th-label{width:'+w+';page-break-inside:avoid}}'+
+      '</style></head><body>'+html+(s.autoPrint!==false?'<script>window.onload=function(){setTimeout(function(){window.print();},250);window.onafterprint=function(){window.close();};};<\\/script>':'')+'</body></html>');
+    win.document.close();
+  };
+
+  var browserPrint=window.SgcThermal.print;
+  window.SgcThermal.browserPrint=browserPrint;
+  window.SgcThermal.print=async function(data){
+    var s=window.SgcThermal.settings||defaults, mode=s.transport||'auto';
+    if(mode==='bridge'||mode==='auto'){
+      var br=await bridgePrint(data);
+      if(br.ok){return true;}
+      if(mode==='bridge'){alert('Thermal Bridge tidak dapat mencetak. Pastikan Android bridge aktif dan printer Bluetooth sudah terhubung.');return false;}
+    }
+    if(mode==='ble'||mode==='auto'){
+      if(window.SgcThermal.ble.connected){try{await blePrint(data);return true;}catch(e){if(mode==='ble'){alert('Gagal cetak Bluetooth BLE: '+e.message);return false;}}}
+      if(mode==='ble'){alert('Hubungkan printer BLE terlebih dahulu.');return false;}
+    }
+    browserPrint(data); return true;
+  };
+
+  window.SgcThermal.openSettings=function(){
+    var s=window.SgcThermal.settings;
+    var el=document.getElementById('sgc-thermal-width');if(el)el.value=s.width;
+    var pn=document.getElementById('sgc-thermal-printer');if(pn)pn.value=s.printerName||'';
+    var ap=document.getElementById('sgc-thermal-auto');if(ap)ap.checked=s.autoPrint!==false;var tr=document.getElementById('sgc-thermal-transport');if(tr)tr.value=s.transport||'auto';var bu=document.getElementById('sgc-thermal-bridge');if(bu)bu.value=s.bridgeUrl||'http://localhost:9100';updatePrinterStatus();
+    if(typeof openModal==='function')openModal('modal-thermal-settings');
+  };
+  window.SgcThermal.saveSettings=function(){
+    var s={width:(document.getElementById('sgc-thermal-width')||{}).value||'58',printerName:(document.getElementById('sgc-thermal-printer')||{}).value||'',autoPrint:!!((document.getElementById('sgc-thermal-auto')||{}).checked),transport:(document.getElementById('sgc-thermal-transport')||{}).value||'auto',bridgeUrl:(document.getElementById('sgc-thermal-bridge')||{}).value||'http://localhost:9100'};
+    window.SgcThermal.settings=s;save(s);closeModal('modal-thermal-settings');
+    alert('Pengaturan printer thermal tersimpan. Ukuran label: '+s.width+' mm.');
+  };
+  window.SgcThermal.testPrint=function(){
+    var s=window.SgcThermal.settings;
+    SgcThermal.print({title:'TEST LABEL THERMAL',subtitle:s.width+' mm',rows:[['Printer',s.printerName||'Belum diberi nama'],['Mode','Thermal dari HP / browser']],barcodes:['TEST-THERMAL-001'],barcodeLabels:['BARCODE TEST']});
+  };
+
+  function openTrace(id){
+    var data=window.SgcThermal.trace(id);
+    if(!data){alert('ID tidak ditemukan: '+id);return;}
+    var html='<div style="font-size:12px;font-weight:800;margin-bottom:8px">'+esc(data.id)+'</div>';
+    html+='<div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px">'+esc(data.summary||'')+'</div>';
+    html+='<div style="border-top:1px solid var(--border)">';(data.timeline||[]).forEach(function(x){html+='<div style="padding:8px 0;border-bottom:1px dotted var(--border)"><strong>'+esc(x.stage)+'</strong><div style="font-size:10px;color:var(--text-muted);margin-top:2px">'+esc(x.detail||'')+'</div></div>';});html+='</div>';
+    var box=document.getElementById('sgc-trace-content');if(box)box.innerHTML=html;
+    if(typeof openModal==='function')openModal('modal-trace');
+  }
+  window.SgcThermal.trace=function(id){
+    id=String(id||'').trim();if(!id)return null;
+    var plans=window.rencanaData||[], execs=window.eksekusiData||[];
+    var p=plans.find(function(x){return x&&x.noDok===id||x&&id.indexOf(x.noDok+'-')===0;});
+    var t2=window.SgcT2||{};var dough=(t2.stokDough||[]).find(function(x){return x&&x.labelId===id;});
+    var batch=(t2.batchList||[]).find(function(x){return x&&x.batchKode===id;});
+    var t4=(window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x&&(x.batchKode===id||x.id===id);});
+    var t5=(window.SgcT5&&window.SgcT5.histori||[]).find(function(x){return x&&x.batchKode===id||x&&x.id===id;});
+    var t6items=[];(window.SgcT6&&window.SgcT6.historiKirim||[]).forEach(function(d){(d.items||[]).forEach(function(it){if(it.batchKode===id)t6items.push({doc:d,it:it});});});
+    var root=p|| (dough&&plans.find(function(x){return x.noDok===dough.nomorInduk;})) || (batch&&plans.find(function(x){return x.noDok===batch.nomorInduk;})) || (t4&&plans.find(function(x){return x.noDok===t4.nomorInduk;}));
+    if(!p&&!dough&&!batch&&!t4&&!t5&&!t6items.length&&!root)return null;
+    var ni=(root&&root.noDok)||(dough&&dough.nomorInduk)||(batch&&batch.nomorInduk)||(t4&&t4.nomorInduk)||'';
+    var ex=execs.find(function(x){return x.noDok===ni;});
+    var timeline=[];
+    if(root||ni)timeline.push({stage:'Perencanaan / Induk',detail:ni+(root&&root.produk?' · '+root.produk:'')});
+    if(ex)timeline.push({stage:'Tahap 1 — Premix',detail:'Selesai '+(ex.tglProduksi||'')+' · '+(ex.pelaksana||'')});
+    if(dough)timeline.push({stage:'Tahap 2 — Dough',detail:dough.labelId+' · dibuat '+(dough.waktuBuat||'')+' · '+(dough.lokasiSimp||'')});
+    if(batch)timeline.push({stage:'Tahap 3 — Panggang',detail:batch.batchKode+' · selesai '+(batch.waktuSelesaiPanggang||batch.waktuOven||'')+' · yield '+(batch.yieldBersih||batch.yieldTotal||'')+' gr'});
+    if(t4)timeline.push({stage:'Tahap 4 — Penyimpanan',detail:(t4.jenisPenyimpanan||'')+' · '+(t4.rakLokasi||'')+' · '+(t4.waktuSimpan||'')});
+    if(t5)timeline.push({stage:'Tahap 5 — Pengemasan',detail:'Dikemas '+(t5.waktuKemas||'')+' · '+(t5.operatorKemas||'')});
+    t6items.forEach(function(z){timeline.push({stage:'Tahap 6 — Gudang',detail:z.doc.noSPB+' · '+z.it.jumlah+' '+z.it.satuan+' · '+(z.doc.waktuDibuat||'')});});
+    return {id:id,summary:'Induk: '+ni,timeline:timeline};
+  };
+  window.SgcThermal.openTrace=openTrace;
+
+  function addSettingsUi(){
+    if(!document.getElementById('nav-thermal-settings')){
+      var rb=document.getElementById('role-btn');
+      if(rb)rb.insertAdjacentHTML('beforebegin','<button class="nav-item" id="nav-thermal-settings" onclick="SgcThermal.openSettings()"><i class="ti ti-printer"></i>Printer Label</button>');
+    }
+    if(!document.getElementById('modal-thermal-settings')){
+      document.body.insertAdjacentHTML('beforeend','<div class="overlay" id="modal-thermal-settings"><div class="modal" style="max-width:460px"><div class="mhead"><h3>Pengaturan Printer Label</h3><button class="icn-btn" onclick="closeModal(\'modal-thermal-settings\')"><i class="ti ti-x"></i></button></div><div class="mbody"><div class="field"><label>Ukuran label thermal</label><select id="sgc-thermal-width"><option value="58">58 mm</option><option value="80">80 mm</option></select></div><div class="field"><label>Nama / identitas printer</label><input id="sgc-thermal-printer" placeholder="Contoh: Thermal Dapur 1"></div><div class="field"><label>Mode koneksi</label><select id="sgc-thermal-transport"><option value="auto">Otomatis: Bridge → BLE → Browser</option><option value="bridge">Android Bridge — Bluetooth Classic / SPP</option><option value="ble">Bluetooth BLE langsung</option><option value="browser">Browser / window.print()</option></select></div><div class="field"><label>Alamat Android Print Bridge</label><input id="sgc-thermal-bridge" value="http://localhost:9100" placeholder="http://localhost:9100"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Dipakai untuk printer Bluetooth Classic ESC/POS seperti banyak Kassen/Xprinter/HOIN. Printer dipasangkan di Android, lalu bridge mengirim ESC/POS ke printer.</div></div><div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px"><button class="btn sm" onclick="SgcThermal.connectBluetooth()"><i class="ti ti-bluetooth"></i>Hubungkan Bluetooth BLE</button><button class="btn sm" onclick="SgcThermal.testConnection()"><i class="ti ti-plug-connected"></i>Test Koneksi</button></div><div style="margin-top:8px;font-size:10px">Status BLE: <span id="sgc-thermal-status"><span class="badge b-gray">Belum terhubung</span></span> · Bridge: <span id="sgc-thermal-bridge-status">Memeriksa…</span></div><label style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:8px"><input id="sgc-thermal-auto" type="checkbox" checked style="width:14px;height:14px"> Browser print otomatis jika mode Browser dipilih</label><div class="alert-box warn" style="margin-top:12px"><i class="ti ti-info-circle"></i><div><strong>PC tetap memakai window.print().</strong> Untuk HP, printer Bluetooth Classic umumnya membutuhkan Android print bridge; BLE tertentu bisa langsung dari Chrome Android. Tidak semua perangkat Bluetooth expose protokol ESC/POS yang sama.</div></div></div><div class="mfoot"><button class="btn" onclick="SgcThermal.testPrint()"><i class="ti ti-printer"></i>Test Print</button><button class="btn primary" onclick="SgcThermal.saveSettings()">Simpan Pengaturan</button></div></div></div>');
+    }
+    if(!document.getElementById('modal-trace'))document.body.insertAdjacentHTML('beforeend','<div class="overlay" id="modal-trace"><div class="modal" style="max-width:520px"><div class="mhead"><h3>Traceability Produksi</h3><button class="icn-btn" onclick="closeModal(\'modal-trace\')"><i class="ti ti-x"></i></button></div><div class="mbody"><div id="sgc-trace-content"></div></div><div class="mfoot"><button class="btn" onclick="closeModal(\'modal-trace\')">Tutup</button></div></div></div>');
+  }
+
+  function addT1Button(){
+    var f=document.querySelector('#modal-label .mfoot');if(!f||f.querySelector('.sgc-thermal-btn'))return;
+    f.insertAdjacentHTML('afterbegin','<button class="btn sgc-thermal-btn" onclick="SgcThermal.printT1(window._sgcThermalT1)"><i class="ti ti-printer"></i>Cetak Thermal</button>');
+  }
+  window.SgcThermal.printT1=function(noDok){
+    if(noDok&&typeof noDok==='object')noDok=noDok.noDok;
+    var p=(window.rencanaData||[]).find(function(x){return x.noDok===noDok;});if(!p)return alert('Data perencanaan tidak ditemukan.');
+    var r=(window.resepData||[])[p.resepIdx]||{};var e=(window.eksekusiData||[]).find(function(x){return x.noDok===noDok;})||{};
+    var obj=noDok+'-PX01';
+    SgcThermal.print({title:'LABEL PREMIX — TAHAP 1',subtitle:p.produk||r.nama,rows:[['ID Induk',noDok],['ID Tahap',obj],['Resep',r.nama||p.produk],['Jumlah',(p.batch||0)+' × resep'],['Produksi',e.tglProduksi||''],['Expired',e.tglExpired||''],['Pelaksana',e.pelaksana||'']],barcodes:[noDok,obj],barcodeLabels:['BARCODE INDUK','BARCODE TAHAP 1']});
+  };
+
+  function patchT1(){
+    if(typeof window.showLabelDoc!=='function'||window.showLabelDoc._thermal)return;
+    var orig=window.showLabelDoc;window.showLabelDoc=function(noDok){window._sgcThermalT1=noDok;var r=orig.apply(this,arguments);setTimeout(addT1Button,20);return r;};window.showLabelDoc._thermal=true;
+  }
+  window.SgcThermal.printT1Group=function(noDok,code){
+    var p=(window.rencanaData||[]).find(function(x){return x.noDok===noDok;});if(!p)return;
+    var r=(window.resepData||[])[p.resepIdx]||{};var groups=(r.tutorial&&r.tutorial.premix&&Array.isArray(r.tutorial.premix.groups))?r.tutorial.premix.groups:[];var g=groups.find(function(x){return String(x.code)===String(code);})||{code:code,name:''};
+    var obj=noDok+'-G'+code;
+    SgcThermal.print({title:'LABEL GRUP PREMIX — TAHAP 1',subtitle:'Kode '+code+' · '+(g.name||'Grup '+code),rows:[['ID Induk',noDok],['ID Grup',obj],['Kode Grup',code],['Resep',r.nama||p.produk],['Tujuan','Validasi Tahap 2']],barcodes:[noDok,obj],barcodeLabels:['BARCODE INDUK','BARCODE GRUP']});
+  };
+  window.SgcThermal.validateGroupScan=function(){
+    var inp=document.getElementById('sgc-t2-group-scan');var out=document.getElementById('sgc-t2-group-feedback');var code=((inp&&inp.value)||'').trim().toUpperCase();var ni=(window.SgcT2&&window.SgcT2.currentNI)||window.getNomorIndukAktif&&window.getNomorIndukAktif();
+    if(!code){if(out)out.innerHTML='<div class="alert-box warn" style="margin:0"><i class="ti ti-scan"></i><div>Masukkan atau scan barcode grup.</div></div>';return false;}
+    var p=(window.rencanaData||[]).find(function(x){return x.noDok===ni;});var r=p?(window.resepData||[])[p.resepIdx]:null;
+    var expected=[];if(r&&r.tutorial&&r.tutorial.premix&&Array.isArray(r.tutorial.premix.groups))expected=r.tutorial.premix.groups.map(function(g){return String(ni+'-G'+g.code).toUpperCase();});
+    var ok=expected.indexOf(code)>=0 || code===String(ni).toUpperCase();
+    if(out)out.innerHTML=ok?'<div class="alert-box ok" style="margin:0"><i class="ti ti-circle-check"></i><div><strong>Barcode grup valid.</strong> '+esc(code)+'</div></div>':'<div class="alert-box warn" style="margin:0"><i class="ti ti-alert-triangle"></i><div><strong>Barcode grup tidak sesuai.</strong> Scan tetap opsional pada versi uji coba.</div></div>';
+    return ok;
+  };
+  function addT2GroupScan(){
+    var area=document.getElementById('t2-active-area');if(!area||document.getElementById('sgc-t2-group-scan-wrap'))return;
+    var ni=(window.SgcT2&&window.SgcT2.currentNI)||'';
+    area.insertAdjacentHTML('afterbegin','<div id="sgc-t2-group-scan-wrap" class="card" style="margin-bottom:10px;border:1px dashed var(--border-strong)"><div class="card-body" style="padding:10px"><div style="font-size:11px;font-weight:700;margin-bottom:5px"><i class="ti ti-scan"></i> Scan Barcode Grup Premix <span class="badge b-gray">Opsional — uji coba</span></div><div style="display:flex;gap:7px"><input id="sgc-t2-group-scan" class="search" style="flex:1" placeholder="Scan contoh: [NomorInduk]-GA" onkeydown="if(event.key===\'Enter\')SgcThermal.validateGroupScan()"><button class="btn sm primary" onclick="SgcThermal.validateGroupScan()"><i class="ti ti-scan"></i>Validasi</button></div><div id="sgc-t2-group-feedback" style="margin-top:6px"></div></div></div>');
+  }
+
+  function patchT2(){
+    if(window.SgcT2&&typeof window.SgcT2.simpanDough==='function'&&!window.SgcT2.simpanDough._thermal){
+      var orig=window.SgcT2.simpanDough;window.SgcT2.simpanDough=function(){var result=orig.apply(this,arguments);setTimeout(function(){var vals=[];var rows=(window.SgcT2.stokDough||[]);rows.slice(-10).forEach(function(x){if(x&&x.labelId)vals.push(x.labelId);});if(vals.length){var box=document.getElementById('t2-ni-result');if(box&&!box.querySelector('.sgc-th-after-save')){box.insertAdjacentHTML('beforeend','<div class="sgc-th-after-save" style="margin-top:8px"><button class="btn sm" onclick="SgcThermal.printT2Batch('+JSON.stringify(vals).replace(/</g,'\\u003c')+')"><i class="ti ti-printer"></i>Cetak Thermal Label Dough Terakhir</button></div>');}}},60);return result;};window.SgcT2.simpanDough._thermal=true;
+    }
+  }
+  window.SgcThermal.printT2=function(labelId){
+    var d=(window.SgcT2&&window.SgcT2.stokDough||[]).find(function(x){return x.labelId===labelId;});if(!d)return;
+    var ni=d.nomorInduk||'';var p=(window.rencanaData||[]).find(function(x){return x.noDok===ni;});var r=p?(window.resepData||[])[p.resepIdx]:{};
+    SgcThermal.print({title:'LABEL DOUGH — TAHAP 2',subtitle:r&&r.nama||p&&p.produk||'',rows:[['ID Induk',ni],['ID Dough',d.labelId],['Resep',r&&r.nama||p&&p.produk||''],['Dibuat',d.waktuBuat||''],['Simpan',d.lokasiSimp||''],['Expired',d.expiredDough||'']],barcodes:[ni,d.labelId],barcodeLabels:['BARCODE INDUK','BARCODE DOUGH']});
+  };
+  window.SgcThermal.printT2Batch=function(a){(a||[]).forEach(function(id,i){setTimeout(function(){window.SgcThermal.printT2(id);},i*500);});};
+
+  function patchT3(){
+    if(!window.SgcT2||typeof window.SgcT2.refreshOvenDashboard!=='function'||window.SgcT2.refreshOvenDashboard._thermal)return;
+    var orig=window.SgcT2.refreshOvenDashboard;window.SgcT2.refreshOvenDashboard=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t3-histori-body .sgc-oven-row').forEach(function(row){if(row.querySelector('.sgc-th-t3'))return;var code=(row.querySelector('.sgc-or-lbl code')||{}).textContent;if(code)row.querySelector('.sgc-or-lbl').insertAdjacentHTML('afterend','<button class="btn sm sgc-th-t3" style="margin-top:5px" onclick="SgcThermal.printT3(\''+code.trim()+'\')"><i class="ti ti-printer"></i>Thermal</button>');});},30);return r;};window.SgcT2.refreshOvenDashboard._thermal=true;
+  }
+  window.SgcThermal.printT3=function(code){var b=(window.SgcT2&&window.SgcT2.batchList||[]).find(function(x){return x.batchKode===code;});if(!b)return;var ni=b.nomorInduk||'';var p=(window.rencanaData||[]).find(function(x){return x.noDok===ni;});var r=p?(window.resepData||[])[p.resepIdx]:{};SgcThermal.print({title:'LABEL HASIL PANGGANG — TAHAP 3',subtitle:r&&r.nama||p&&p.produk||'',rows:[['ID Induk',ni],['ID Batch',b.batchKode],['Resep',r&&r.nama||p&&p.produk||''],['Hasil',((b.yieldBersih!=null?b.yieldBersih:b.yieldTotal)||0)+' gr'],['Selesai',b.waktuSelesaiPanggang||''],['Operator',b.operatorOven||'']],barcodes:[ni,b.batchKode],barcodeLabels:['BARCODE INDUK','BARCODE BATCH']});};
+
+  window.SgcThermal.printT4=function(id){var it=(window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x.id===id;});if(!it)return;var ni=it.nomorInduk||'';SgcThermal.print({title:'LABEL PENYIMPANAN — TAHAP 4',subtitle:it.namaProduk||'',rows:[['ID Induk',ni],['ID Batch',it.batchKode],['Produk',it.namaProduk],['Hasil',Number(it.jumlahSiapKemas||0).toLocaleString('id-ID')+' '+(it.satuan||'')],['Simpan',window.T4_JENIS_LABEL&&window.T4_JENIS_LABEL[it.jenisPenyimpanan]||it.jenisPenyimpanan||''],['Rak',it.rakLokasi||''],['Waktu',it.waktuSimpan||''],['Expired',it.expiredPenyimpanan||''],['Penyimpan',it.namaPenyimpan||'']],barcodes:[ni,it.batchKode],barcodeLabels:['BARCODE INDUK','BARCODE BATCH']});};
+  function patchT4(){
+    if(!window.SgcT4||typeof window.SgcT4.refresh!=='function'||window.SgcT4.refresh._thermal)return;var orig=window.SgcT4.refresh;window.SgcT4.refresh=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t4-stok-tbody tr').forEach(function(tr){var b=tr.querySelector('td code');if(!b||tr.querySelector('.sgc-th-t4'))return;var code=b.textContent.trim();var it=(window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===code;});if(it){var td=tr.querySelector('td:last-child');if(td)td.insertAdjacentHTML('beforeend','<button class="btn sm sgc-th-t4" style="margin-left:4px" onclick="SgcThermal.printT4(\''+it.id+'\')"><i class="ti ti-printer"></i>Thermal</button>');}});},30);return r;};window.SgcT4.refresh._thermal=true;}
+
+  window.SgcThermal.printT5=function(id){var h=(window.SgcT5&&window.SgcT5.histori||[]).find(function(x){return x.id===id;});if(!h)return;var ni=((window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===h.batchKode;})||{}).nomorInduk||'';var first=(h.items||[])[0]||{};SgcThermal.print({title:'LABEL PRODUK — TAHAP 5',subtitle:h.namaProduk||'',rows:[['ID Induk',ni],['ID Batch',h.batchKode],['SKU',first.skuCode||''],['Jumlah',Number(first.jumlah||0)+' '+(first.satuan||'')],['Dikemas',h.waktuKemas||''],['Operator',h.operatorKemas||''],['Expired',h.tglExpired||'']],barcodes:[ni,h.batchKode+'-PK01'],barcodeLabels:['BARCODE INDUK','BARCODE TAHAP 5']});};
+  function patchT5(){if(!window.SgcT5||typeof window.SgcT5.renderHistori!=='function'||window.SgcT5.renderHistori._thermal)return;var orig=window.SgcT5.renderHistori;window.SgcT5.renderHistori=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t5-histori-body .t5-pkg-hist-row').forEach(function(row){if(row.querySelector('.sgc-th-t5'))return;var code=(row.querySelector('code')||{}).textContent;if(!code)return;var h=(window.SgcT5.histori||[]).find(function(x){return x.batchKode===code;});if(h)row.insertAdjacentHTML('beforeend','<button class="btn sm sgc-th-t5" style="margin-left:5px" onclick="SgcThermal.printT5(\''+h.id+'\')"><i class="ti ti-printer"></i>Thermal</button>');});},30);return r;};window.SgcT5.renderHistori._thermal=true;}
+
+  window.SgcThermal.printT6=function(id){var d=(window.SgcT6&&window.SgcT6.historiKirim||[]).find(function(x){return x.id===id;});if(!d)return;var first=(d.items||[])[0]||{};var ni=((window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===first.batchKode;})||{}).nomorInduk||'';SgcThermal.print({title:'LABEL GUDANG — TAHAP 6',subtitle:first.namaProduk||'',rows:[['ID Induk',ni],['No. SPB',d.noSPB],['ID Batch',first.batchKode||''],['SKU',first.skuCode||''],['Jumlah',Number(first.jumlah||0)+' '+(first.satuan||'')],['Dikirim',d.waktuDibuat||''],['Admin',d.admin||'']],barcodes:[ni,first.batchKode||d.noSPB],barcodeLabels:['BARCODE INDUK','BARCODE BATCH']});};
+  function patchT6(){if(!window.SgcT6||typeof window.SgcT6.renderHistori!=='function'||window.SgcT6.renderHistori._thermal)return;var orig=window.SgcT6.renderHistori;window.SgcT6.renderHistori=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t6-histori-body .t5-pkg-hist-row').forEach(function(row){if(row.querySelector('.sgc-th-t6'))return;var code=(row.querySelector('code')||{}).textContent;if(!code)return;var d=(window.SgcT6.historiKirim||[]).find(function(x){return x.noSPB===code;});if(d)row.querySelector('div:last-child').insertAdjacentHTML('beforeend','<button class="btn sm sgc-th-t6" style="margin-left:5px" onclick="SgcThermal.printT6(\''+d.id+'\')"><i class="ti ti-printer"></i>Thermal</button>');});},30);return r;};window.SgcT6.renderHistori._thermal=true;}
+
+  function addScanTools(){
+    if(document.getElementById('sgc-trace-tool'))return;
+    var top=document.querySelector('.topbar-right');if(!top)return;
+    top.insertAdjacentHTML('afterbegin','<button class="btn sm" id="sgc-trace-tool" onclick="SgcThermal.scanPrompt()"><i class="ti ti-scan"></i>Scan / Trace</button>');
+  }
+  window.SgcThermal.scanPrompt=function(){var id=prompt('Scan/masukkan Barcode Induk atau Barcode Tahap:');if(id)SgcThermal.openTrace(id);};
+
+  function renderPremixGroupButtons(){
+    document.querySelectorAll('[data-premix-card]').forEach(function(card){
+      if(card.querySelector('.sgc-th-group'))return;
+      var code=card.getAttribute('data-premix-card');var step=card.closest('[data-progress-key]');var key=step&&step.getAttribute('data-progress-key')||'';var noDok=key.replace(/_premix_progress$/,'');
+      if(!noDok||!code)return;
+      var progress={};try{progress=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch(e){}
+      if(!progress[code])return;
+      card.insertAdjacentHTML('beforeend','<button type="button" class="btn sm sgc-th-group" style="margin-top:8px" onclick="SgcThermal.printT1Group(\''+noDok+'\',\''+String(code).replace(/'/g,'\\\'')+'\')"><i class="ti ti-printer"></i>Cetak Thermal Label Grup '+esc(code)+'</button>');
+    });
+  }
+  function patchPremixGroups(){
+    if(typeof window.selesaiPremixKode!=='function'||window.selesaiPremixKode._thermal)return;
+    var orig=window.selesaiPremixKode;window.selesaiPremixKode=function(progressKey,code){var r=orig.apply(this,arguments);setTimeout(function(){var p=(window.rencanaData||[]).find(function(x){return progressKey.indexOf(x.noDok+'_premix_progress')===0;});if(!p)return;var card=document.querySelector('[data-premix-card="'+String(code).replace(/"/g,'\\"')+'"]');if(card&&!card.querySelector('.sgc-th-group'))card.insertAdjacentHTML('beforeend','<button type="button" class="btn sm sgc-th-group" style="margin-top:8px" onclick="SgcThermal.printT1Group(\''+p.noDok+'\',\''+String(code).replace(/'/g,'\\\'')+'\')"><i class="ti ti-printer"></i>Cetak Thermal Label Grup '+esc(code)+'</button>');},50);return r;};window.selesaiPremixKode._thermal=true;
+  }
+  function patchT2Scan(){
+    if(!window.SgcT2||typeof window.SgcT2.cariNomorInduk!=='function'||window.SgcT2.cariNomorInduk._thermalGroup)return;
+    var orig=window.SgcT2.cariNomorInduk;window.SgcT2.cariNomorInduk=function(){var r=orig.apply(this,arguments);setTimeout(function(){addT2GroupScan();},50);return r;};window.SgcT2.cariNomorInduk._thermalGroup=true;
+  }
+  function init(){addSettingsUi();addScanTools();patchT1();patchPremixGroups();patchT2();patchT2Scan();patchT3();patchT4();patchT5();patchT6();addT2GroupScan();renderPremixGroupButtons();}
+  setTimeout(init,400);
+  setTimeout(init,1500);
+  setTimeout(init,3000);
+})();
+</script>
+
 </body>
 </html>
