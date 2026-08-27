@@ -655,7 +655,7 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
 <div class="topbar">
   <span class="topbar-title" id="page-title">Dashboard</span>
   <span class="topbar-sub" id="page-sub">Ringkasan produksi hari ini</span>
-  <div class="topbar-right">
+  <div class="topbar-right"><button class="btn sm" onclick="openThermalSettings()"><i class="ti ti-printer"></i> Printer Thermal</button>
     <span class="role-tag" id="role-display" style="background:#E8EAF6;color:#283593"><i class="ti ti-shield-lock" aria-hidden="true"></i><span id="role-text">Owner</span></span>
     <button class="btn sm" onclick="openModal('modal-role')"><i class="ti ti-switch-horizontal" aria-hidden="true"></i>Ganti peran</button>
     <button class="btn sm" onclick="exportDataJSON()" title="Export semua data untuk analisis AI" style="background:var(--brand);color:#fff;border-color:var(--brand)"><i class="ti ti-download"></i>Export Data</button>
@@ -1168,7 +1168,7 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
     </div>
     <div class="mfoot">
       <button class="btn" onclick="closeModal('modal-label')">Tutup</button>
-      <button class="btn primary" onclick="printModal('modal-label')"><i class="ti ti-printer" aria-hidden="true"></i>Cetak label</button>
+      <button class="btn primary" onclick="printModal('modal-label')"><i class="ti ti-printer" aria-hidden="true"></i>Cetak label PC</button><button class="btn success" onclick="(function(){var no=(document.getElementById('label-content').innerText.match(/\b\d{6}\.[^\s]+/)||[])[0]; if(no&&window.SgcThermal)window.SgcThermal.printT1(no).catch(function(e){alert('Thermal gagal: '+e.message);});else alert('Nomor induk label tidak ditemukan.');})()"><i class="ti ti-printer"></i>Thermal</button>
     </div>
   </div>
 </div>
@@ -10998,314 +10998,115 @@ setInterval(boot,900);
 })();
 </script>
 
+
+<!-- SASAGU THERMAL v9 — BLE engine mengikuti MAGOJI + Web Serial fallback -->
 <script>
-/* ══════════════════════════════════════════════════════════════════
-   SASAGU — THERMAL LABEL & TRACEABILITY ADDON
-   - Mempertahankan window.print()/printModal() untuk PC.
-   - Menambahkan jalur Cetak Thermal 58/80 mm dari HP/browser.
-   - 2 level barcode: Barcode Induk + Barcode Objek/Tahap.
-   - Scan tetap opsional; belum dibuat mandatory.
-   ══════════════════════════════════════════════════════════════════ */
 (function(){
   'use strict';
-  var LS='sgc_thermal_print_settings_v1';
-  var defaults={width:'58',printerName:'',printerAddress:'',autoPrint:true,transport:'auto',bridgeUrl:'http://localhost:9100'};
-  function load(){try{return Object.assign({},defaults,JSON.parse(localStorage.getItem(LS)||'{}'));}catch(e){return Object.assign({},defaults);}}
-  function save(v){try{localStorage.setItem(LS,JSON.stringify(v));}catch(e){}}
-  window.SgcThermal={settings:load()};
-
-  function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
-  function barcode(id){return (id&&typeof window.genBarcode==='function')?window.genBarcode(id):'';}
-  function row(k,v){return '<div class="sgc-th-row"><span>'+esc(k)+'</span><strong>'+esc(v||'—')+'</strong></div>';}
-  function nowLabel(){var d=new Date();return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
-
-  /* ───────────────────────────────────────────────────────────────
-     UNIVERSAL THERMAL TRANSPORT
-     - Android Bridge: Bluetooth Classic / SPP ESC/POS via localhost
-     - Web Bluetooth: BLE ESC/POS direct from Chromium on Android
-     - Browser: legacy window.print() fallback (PC tetap aman)
-     Catatan: browser Android tidak diberi akses Bluetooth Classic SPP secara
-     langsung. Untuk printer Kassen/Xprinter/HOIN sejenis yang memakai SPP,
-     gunakan Android print bridge; BLE bisa dicoba langsung via Web Bluetooth.
-     ─────────────────────────────────────────────────────────────── */
-  function bridgeUrl(){return String((window.SgcThermal.settings||defaults).bridgeUrl||'http://localhost:9100').replace(/\/$/,'');}
-  async function bridgeHealth(){
-    try{var r=await fetch(bridgeUrl()+'/health',{method:'GET',cache:'no-store',signal:AbortSignal.timeout(1500)});if(!r.ok)return null;return await r.json();}catch(e){return null;}
-  }
-  function cleanText(v){return String(v==null?'':v).replace(/[\u0000-\u001f\u007f]/g,' ').trim();}
-  function bridgePayload(data){
-    var width=(window.SgcThermal.settings||defaults).width==='80'?80:58;
-    var blocks=[];
-    blocks.push({type:'text',text:'SASAGU',align:'center',bold:true,size:2});
-    blocks.push({type:'text',text:cleanText(data.title||'LABEL PRODUKSI'),align:'center',bold:true,size:1});
-    if(data.subtitle)blocks.push({type:'text',text:cleanText(data.subtitle),align:'center',size:1});
-    blocks.push({type:'line'});
-    (data.rows||[]).forEach(function(r){
-      blocks.push({type:'row',left:cleanText(r[0]),right:cleanText(r[1]||'-')});
-    });
-    (data.barcodes||[]).filter(Boolean).forEach(function(c,i){
-      blocks.push({type:'text',text:cleanText((data.barcodeLabels&&data.barcodeLabels[i])||'BARCODE'),align:'center',bold:true,size:1});
-      blocks.push({type:'barcode',data:cleanText(c),format:'CODE39',height:55,width:2,align:'center',hri:true});
-      blocks.push({type:'text',text:cleanText(c),align:'center',size:1});
-    });
-    blocks.push({type:'feed',lines:3});
-    return {printerAddress:cleanText((window.SgcThermal.settings||defaults).printerAddress||''),width:width,cut:true,content:blocks};
-  }
-  async function bridgePrint(data){
-    var h=await bridgeHealth(); if(!h)return {ok:false,reason:'bridge-unavailable'};
-    try{
-      var r=await fetch(bridgeUrl()+'/print',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(bridgePayload(data)),signal:AbortSignal.timeout(5000)});
-      var j={}; try{j=await r.json();}catch(e){}
-      return {ok:r.ok,health:h,result:j};
-    }catch(e){return {ok:false,reason:'bridge-error',error:e};}
-  }
-  var BLE_UUIDS=['0000ffe0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','000018f0-0000-1000-8000-00805f9b34fb','0000ae30-0000-1000-8000-00805f9b34fb'];
-  var BLE_CHAR_UUIDS=['0000ffe1-0000-1000-8000-00805f9b34fb','0000ff02-0000-1000-8000-00805f9b34fb','00002af1-0000-1000-8000-00805f9b34fb','0000ae01-0000-1000-8000-00805f9b34fb'];
-  window.SgcThermal.ble={device:null,characteristic:null,connected:false};
-  async function bleConnect(){
-    if(!navigator.bluetooth)throw new Error('Web Bluetooth tidak tersedia. Gunakan Chrome Android/Chromium atau Android Bridge.');
-    var dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:BLE_UUIDS});
-    var server=await dev.gatt.connect(); var services=await server.getPrimaryServices(); var ch=null;
-    for(var si=0;si<services.length&&!ch;si++){var cs=await services[si].getCharacteristics();for(var ci=0;ci<cs.length;ci++){var c=cs[ci];if(c.properties.write||c.properties.writeWithoutResponse){ch=c;break;}}}
-    if(!ch)throw new Error('Printer BLE terhubung tetapi characteristic WRITE tidak ditemukan.');
-    window.SgcThermal.ble={device:dev,characteristic:ch,connected:true};
-    dev.addEventListener('gattserverdisconnected',function(){window.SgcThermal.ble.connected=false;window.SgcThermal.ble.characteristic=null;updatePrinterStatus();});
-    updatePrinterStatus(); return dev;
-  }
-  function u8(a){return new Uint8Array(a);}
-  function escposText(t){var enc=new TextEncoder();return enc.encode(cleanText(t)+'\\n');}
-  function concatBytes(parts){var n=parts.reduce(function(a,b){return a+b.length;},0),o=new Uint8Array(n),p=0;parts.forEach(function(x){o.set(x,p);p+=x.length;});return o;}
-  function barcodeBytes(code){
-    var enc=new TextEncoder(),d=enc.encode(cleanText(code));
-    /* GS k CODE39, terminated by NUL. */
-    return concatBytes([u8([0x1d,0x68,60]),u8([0x1d,0x77,2]),u8([0x1d,0x48,2]),u8([0x1d,0x6b,0x04]),d,u8([0x00,0x0a])]);
-  }
-  function blePayload(data){
-    var parts=[u8([0x1b,0x40]),u8([0x1b,0x61,1]),u8([0x1b,0x45,1]),escposText('SASAGU'),u8([0x1b,0x45,0]),escposText(data.title||'LABEL PRODUKSI')];
-    if(data.subtitle)parts.push(escposText(data.subtitle));
-    parts.push(escposText('--------------------------------'));
-    (data.rows||[]).forEach(function(r){parts.push(escposText(cleanText(r[0])+': '+cleanText(r[1]||'—')));});
-    (data.barcodes||[]).filter(Boolean).forEach(function(c,i){parts.push(u8([0x1b,0x61,1]),escposText((data.barcodeLabels&&data.barcodeLabels[i])||'BARCODE'),barcodeBytes(c),escposText(c));});
-    parts.push(u8([0x1b,0x61,1]),escposText(''),escposText(''),u8([0x1d,0x56,0x00]));
-    return concatBytes(parts);
-  }
-  async function blePrint(data){
-    if(!window.SgcThermal.ble.connected||!window.SgcThermal.ble.characteristic)return {ok:false,reason:'ble-not-connected'};
-    var c=window.SgcThermal.ble.characteristic,bytes=blePayload(data),chunk=180;
-    for(var i=0;i<bytes.length;i+=chunk){var part=bytes.slice(i,Math.min(i+chunk,bytes.length));if(c.writeValueWithoutResponse)await c.writeValueWithoutResponse(part);else await c.writeValue(part);await new Promise(function(r){setTimeout(r,25);});}
-    return {ok:true};
-  }
-  function updatePrinterStatus(){
-    var el=document.getElementById('sgc-thermal-status');if(!el)return;
-    var b=window.SgcThermal.ble||{};el.innerHTML=b.connected?'<span class="badge b-green">BLE terhubung</span>':'<span class="badge b-gray">Belum terhubung</span>';
-    var ep=document.getElementById('sgc-thermal-bridge-status');if(ep)ep.textContent='Memeriksa…';
-    bridgeHealth().then(function(h){if(ep)ep.textContent=h?'Bridge OK · '+(h.printer&&h.printer.connected?'printer terhubung':'printer belum terhubung'):'Bridge tidak ditemukan';});
-  }
-  window.SgcThermal.connectBluetooth=async function(){try{var d=await bleConnect();alert('Printer BLE terhubung: '+(d.name||'tanpa nama'));}catch(e){alert('Gagal menghubungkan Bluetooth: '+e.message);}updatePrinterStatus();};
-  window.SgcThermal.testConnection=async function(){updatePrinterStatus();var h=await bridgeHealth();if(h)return alert('Bridge OK. '+(h.printer&&h.printer.connected?'Printer terhubung.':'Bridge aktif, tetapi printer belum terhubung.'));if(window.SgcThermal.ble.connected)return alert('Bluetooth BLE terhubung.');alert('Belum ada koneksi printer. Untuk printer Bluetooth Classic seperti Kassen/Xprinter, pasangkan di Android lalu gunakan Android print bridge.');};
-
-  window.SgcThermal.print=function(data){
-    data=data||{};
-    var s=window.SgcThermal.settings||defaults;
-    var w=s.width==='80'?'80mm':'58mm';
-    var codes=Array.isArray(data.barcodes)?data.barcodes.filter(Boolean):[];
-    var html='<div class="sgc-th-label">'+
-      '<div class="sgc-th-brand">SASAGU</div>'+
-      '<div class="sgc-th-title">'+esc(data.title||'LABEL PRODUKSI')+'</div>'+ 
-      (data.subtitle?'<div class="sgc-th-sub">'+esc(data.subtitle)+'</div>':'');
-    if(data.rows&&data.rows.length){html+='<div class="sgc-th-data">';data.rows.forEach(function(r){html+=row(r[0],r[1]);});html+='</div>';}
-    if(codes.length){
-      html+='<div class="sgc-th-codes">';
-      codes.forEach(function(c,i){html+='<div class="sgc-th-code-title">'+esc((data.barcodeLabels&&data.barcodeLabels[i])||('BARCODE '+(i+1)))+'</div><div class="sgc-th-barcode">'+barcode(c)+'<div>'+esc(c)+'</div></div>';});
-      html+='</div>';
+  var SgcThermal = window.SgcThermal = window.SgcThermal || {};
+  SgcThermal.bleDevice=null; SgcThermal.bleChar=null; SgcThermal.bleReconnecting=false;
+  SgcThermal.port=null; SgcThermal.writer=null;
+  SgcThermal.paper=localStorage.getItem('sgc_thermal_paper')||'58';
+  SgcThermal.baud=parseInt(localStorage.getItem('sgc_thermal_baud')||'115200',10);
+  var KNOWN_SERVICES=['000018f0-0000-1000-8000-00805f9b34fb','49535343-fe7d-4ae5-8fa9-9fafd205e455','e7810a71-73ae-499d-8c15-faa9aef0c3f2','0000ff00-0000-1000-8000-00805f9b34fb'];
+  var BLE_ID_KEY='sasagu_ble_device_id';
+  function enc(s){return new TextEncoder().encode(String(s==null?'':s));}
+  function bytes(){return new Uint8Array(arguments);}
+  function cat(){var a=arguments,n=0,i,p=0;for(i=0;i<a.length;i++)n+=a[i].length;var o=new Uint8Array(n);for(i=0;i<a.length;i++){o.set(a[i],p);p+=a[i].length;}return o;}
+  function log(msg){console.log('[SASAGU THERMAL]',msg);var el=document.getElementById('sgc-thermal-log');if(el){el.textContent=msg;el.style.display='block';}}
+  function updateBLEUI(){SgcThermal.updateStatus();}
+  SgcThermal.supported=function(){return 'bluetooth' in navigator || 'serial' in navigator;};
+  SgcThermal.isConnected=function(){return !!SgcThermal.bleChar || !!(SgcThermal.port&&SgcThermal.writer);};
+  async function findWritableChar(device){
+    var found=null;
+    for(var i=0;i<KNOWN_SERVICES.length;i++){
+      try{var svc=await device.gatt.getPrimaryService(KNOWN_SERVICES[i]);var chars=await svc.getCharacteristics();
+        for(var j=0;j<chars.length;j++){if(chars[j].properties.write||chars[j].properties.writeWithoutResponse){found=chars[j];break;}}
+        if(found)break;
+      }catch(e){}
     }
-    html+='<div class="sgc-th-footer">Dicetak '+nowLabel()+'</div></div>';
-    var win=window.open('','_blank','width=420,height=720');
-    if(!win){alert('Popup diblokir browser. Izinkan popup untuk mencetak label thermal.');return;}
-    win.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Label Thermal</title><style>'+ 
-      '@page{size:'+w+' auto;margin:0}'+
-      '*{box-sizing:border-box}body{margin:0;padding:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif}'+
-      '.sgc-th-label{width:'+w+';padding:2.5mm 2.2mm 2mm;margin:0 auto;font-size:10px;overflow:hidden;line-height:1.25}.sgc-th-label *{max-width:100%}'+
-      '.sgc-th-brand{text-align:center;font-weight:900;font-size:15px;letter-spacing:2px}.sgc-th-title{text-align:center;font-size:11px;font-weight:800;letter-spacing:.8px;margin-top:1mm}.sgc-th-sub{text-align:center;font-size:8px;color:#555;margin-top:1mm}.sgc-th-data{margin-top:2mm;border-top:1px dashed #777}.sgc-th-row{display:flex;justify-content:space-between;gap:5px;padding:1.2mm 0;border-bottom:1px dotted #bbb;line-height:1.25}.sgc-th-row span{color:#555}.sgc-th-row strong{text-align:right;max-width:65%;word-break:break-word}.sgc-th-codes{margin-top:2mm}.sgc-th-code-title{text-align:center;font-size:8px;font-weight:800;letter-spacing:1px;margin:1.5mm 0 .5mm}.sgc-th-barcode{text-align:center;font-family:monospace;font-size:8px;letter-spacing:1px;overflow:hidden}.sgc-th-barcode svg{display:block;width:100%;height:auto;max-height:18mm;margin:0 auto .5mm}.sgc-th-footer{text-align:center;font-size:7px;color:#777;margin-top:2mm;border-top:1px dashed #aaa;padding-top:1mm}'+
-      '@media print{html,body{width:'+w+';margin:0;padding:0}.sgc-th-label{width:'+w+';page-break-inside:avoid}}'+
-      '</style></head><body>'+html+(s.autoPrint!==false?'<script>window.onload=function(){setTimeout(function(){window.print();},250);window.onafterprint=function(){window.close();};};<\\/script>':'')+'</body></html>');
-    win.document.close();
+    if(!found){try{var svcs=await device.gatt.getPrimaryServices();for(var k=0;k<svcs.length;k++){var chs=await svcs[k].getCharacteristics();for(var q=0;q<chs.length;q++){if(chs[q].properties.write||chs[q].properties.writeWithoutResponse){found=chs[q];break;}}if(found)break;}}catch(e){}}
+    return found;
+  }
+  function onBleDisconnected(){SgcThermal.bleChar=null;SgcThermal.updateStatus();log('Printer Bluetooth terputus.');setTimeout(function(){SgcThermal.tryAutoReconnectBLE();},1200);}
+  SgcThermal.tryAutoReconnectBLE=async function(){
+    if(SgcThermal.bleChar||SgcThermal.bleReconnecting)return !!SgcThermal.bleChar;
+    if(!navigator.bluetooth||!navigator.bluetooth.getDevices)return false;
+    var savedId=localStorage.getItem(BLE_ID_KEY);if(!savedId)return false;
+    SgcThermal.bleReconnecting=true;
+    try{var devices=await navigator.bluetooth.getDevices();var dev=devices.find(function(d){return d.id===savedId;});if(!dev){SgcThermal.bleReconnecting=false;return false;}
+      SgcThermal.bleDevice=dev;dev.addEventListener('gattserverdisconnected',onBleDisconnected);await dev.gatt.connect();SgcThermal.bleChar=await findWritableChar(dev);
+      SgcThermal.bleReconnecting=false;SgcThermal.updateStatus();if(SgcThermal.bleChar){log('Printer tersambung otomatis: '+(dev.name||'Bluetooth'));return true;}
+    }catch(e){SgcThermal.bleReconnecting=false;}
+    SgcThermal.updateStatus();return false;
   };
-
-  var browserPrint=window.SgcThermal.print;
-  window.SgcThermal.browserPrint=browserPrint;
-  window.SgcThermal.print=async function(data){
-    var s=window.SgcThermal.settings||defaults, mode=s.transport||'auto';
-    if(mode==='bridge'||mode==='auto'){
-      var br=await bridgePrint(data);
-      if(br.ok){return true;}
-      if(mode==='bridge'){alert('Thermal Bridge tidak dapat mencetak. Pastikan Android bridge aktif dan printer Bluetooth sudah terhubung.');return false;}
+  SgcThermal.connectBLE=async function(){
+    if(!navigator.bluetooth)throw new Error('Web Bluetooth tidak tersedia. Gunakan Chrome/Edge Android yang mendukung Bluetooth.');
+    if(await SgcThermal.tryAutoReconnectBLE())return true;
+    var dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:KNOWN_SERVICES});
+    SgcThermal.bleDevice=dev;dev.addEventListener('gattserverdisconnected',onBleDisconnected);await dev.gatt.connect();SgcThermal.bleChar=await findWritableChar(dev);
+    if(!SgcThermal.bleChar){SgcThermal.updateStatus();throw new Error('Printer ditemukan, tetapi karakteristik tulis ESC/POS tidak ditemukan.');}
+    try{localStorage.setItem(BLE_ID_KEY,dev.id);}catch(e){}
+    SgcThermal.updateStatus();log('Printer BLE terhubung: '+(dev.name||'Bluetooth'));return true;
+  };
+  SgcThermal.connectSerial=async function(){
+    if(!navigator.serial)throw new Error('Web Serial tidak tersedia.');
+    if(SgcThermal.writer||SgcThermal.port)await SgcThermal.disconnect();
+    var p=await navigator.serial.requestPort();await p.open({baudRate:SgcThermal.baud});SgcThermal.port=p;SgcThermal.writer=p.writable.getWriter();SgcThermal.updateStatus();log('Printer Serial/SPP terhubung.');return true;
+  };
+  SgcThermal.connect=async function(){
+    // Ikuti pola MAGOJI: BLE adalah jalur utama, acceptAllDevices + known services,
+    // lalu cari karakteristik write/writeWithoutResponse secara generic.
+    if(navigator.bluetooth)return SgcThermal.connectBLE();
+    return SgcThermal.connectSerial();
+  };
+  SgcThermal.reconnect=async function(){
+    if(SgcThermal.isConnected())return true;
+    if(await SgcThermal.tryAutoReconnectBLE())return true;
+    if(navigator.serial){var ps=await navigator.serial.getPorts();if(ps.length===1){await ps[0].open({baudRate:SgcThermal.baud});SgcThermal.port=ps[0];SgcThermal.writer=ps[0].writable.getWriter();SgcThermal.updateStatus();return true;}}
+    throw new Error('Printer belum diberi izin. Tekan Hubungkan Printer.');
+  };
+  SgcThermal.disconnect=async function(){
+    try{if(SgcThermal.bleDevice&&SgcThermal.bleDevice.gatt.connected)SgcThermal.bleDevice.gatt.disconnect();}catch(e){}
+    SgcThermal.bleChar=null;SgcThermal.bleDevice=null;
+    try{if(SgcThermal.writer){SgcThermal.writer.releaseLock();SgcThermal.writer=null;}if(SgcThermal.port){await SgcThermal.port.close();}}catch(e){}
+    SgcThermal.port=null;SgcThermal.updateStatus();
+  };
+  SgcThermal.updateStatus=function(){
+    var e=document.getElementById('sgc-thermal-status');if(!e)return;
+    if(!SgcThermal.supported()){e.textContent='🔴 Browser tidak mendukung Bluetooth/Serial';e.className='sgc-th-status bad';return;}
+    if(SgcThermal.bleChar){e.textContent='🟢 Terhubung: '+(SgcThermal.bleDevice&&SgcThermal.bleDevice.name||'Printer Bluetooth');e.className='sgc-th-status ok';}
+    else if(SgcThermal.writer){e.textContent='🟢 Terhubung: Serial/SPP';e.className='sgc-th-status ok';}
+    else {e.textContent='🟡 Printer belum terhubung';e.className='sgc-th-status warn';}
+  };
+  SgcThermal.write=async function(data){
+    if(!SgcThermal.isConnected())await SgcThermal.reconnect();
+    if(SgcThermal.bleChar){
+      var CHUNK=120;
+      for(var i=0;i<data.length;i+=CHUNK){var part=new Uint8Array(data.slice(i,i+CHUNK));try{if(SgcThermal.bleChar.writeValueWithoutResponse)await SgcThermal.bleChar.writeValueWithoutResponse(part);else await SgcThermal.bleChar.writeValue(part);}catch(e){await SgcThermal.bleChar.writeValue(part);}await new Promise(function(r){setTimeout(r,25);});}
+      return;
     }
-    if(mode==='ble'||mode==='auto'){
-      if(window.SgcThermal.ble.connected){try{await blePrint(data);return true;}catch(e){if(mode==='ble'){alert('Gagal cetak Bluetooth BLE: '+e.message);return false;}}}
-      if(mode==='ble'){alert('Hubungkan printer BLE terlebih dahulu.');return false;}
-    }
-    browserPrint(data); return true;
+    if(SgcThermal.writer){await SgcThermal.writer.write(data);return;}
+    throw new Error('Printer belum terhubung.');
   };
 
-  window.SgcThermal.openSettings=function(){
-    var s=window.SgcThermal.settings;
-    var el=document.getElementById('sgc-thermal-width');if(el)el.value=s.width;
-    var pn=document.getElementById('sgc-thermal-printer');if(pn)pn.value=s.printerName||'';var pa=document.getElementById('sgc-thermal-printer-address');if(pa)pa.value=s.printerAddress||'';
-    var ap=document.getElementById('sgc-thermal-auto');if(ap)ap.checked=s.autoPrint!==false;var tr=document.getElementById('sgc-thermal-transport');if(tr)tr.value=s.transport||'auto';var bu=document.getElementById('sgc-thermal-bridge');if(bu)bu.value=s.bridgeUrl||'http://localhost:9100';updatePrinterStatus();
-    if(typeof openModal==='function')openModal('modal-thermal-settings');
-  };
-  window.SgcThermal.saveSettings=function(){
-    var s={width:(document.getElementById('sgc-thermal-width')||{}).value||'58',printerName:(document.getElementById('sgc-thermal-printer')||{}).value||'',printerAddress:(document.getElementById('sgc-thermal-printer-address')||{}).value||'',autoPrint:!!((document.getElementById('sgc-thermal-auto')||{}).checked),transport:(document.getElementById('sgc-thermal-transport')||{}).value||'auto',bridgeUrl:(document.getElementById('sgc-thermal-bridge')||{}).value||'http://localhost:9100'};
-    window.SgcThermal.settings=s;save(s);closeModal('modal-thermal-settings');
-    alert('Pengaturan printer thermal tersimpan. Ukuran label: '+s.width+' mm.');
-  };
-  window.SgcThermal.testPrint=function(){
-    var s=window.SgcThermal.settings;
-    SgcThermal.print({title:'TEST LABEL THERMAL',subtitle:s.width+' mm',rows:[['Printer',s.printerName||'Belum diberi nama'],['Mode','Thermal dari HP / browser']],barcodes:['TEST-THERMAL-001'],barcodeLabels:['BARCODE TEST']});
-  };
-
-  function openTrace(id){
-    var data=window.SgcThermal.trace(id);
-    if(!data){alert('ID tidak ditemukan: '+id);return;}
-    var html='<div style="font-size:12px;font-weight:800;margin-bottom:8px">'+esc(data.id)+'</div>';
-    html+='<div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px">'+esc(data.summary||'')+'</div>';
-    html+='<div style="border-top:1px solid var(--border)">';(data.timeline||[]).forEach(function(x){html+='<div style="padding:8px 0;border-bottom:1px dotted var(--border)"><strong>'+esc(x.stage)+'</strong><div style="font-size:10px;color:var(--text-muted);margin-top:2px">'+esc(x.detail||'')+'</div></div>';});html+='</div>';
-    var box=document.getElementById('sgc-trace-content');if(box)box.innerHTML=html;
-    if(typeof openModal==='function')openModal('modal-trace');
-  }
-  window.SgcThermal.trace=function(id){
-    id=String(id||'').trim();if(!id)return null;
-    var plans=window.rencanaData||[], execs=window.eksekusiData||[];
-    var p=plans.find(function(x){return x&&x.noDok===id||x&&id.indexOf(x.noDok+'-')===0;});
-    var t2=window.SgcT2||{};var dough=(t2.stokDough||[]).find(function(x){return x&&x.labelId===id;});
-    var batch=(t2.batchList||[]).find(function(x){return x&&x.batchKode===id;});
-    var t4=(window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x&&(x.batchKode===id||x.id===id);});
-    var t5=(window.SgcT5&&window.SgcT5.histori||[]).find(function(x){return x&&x.batchKode===id||x&&x.id===id;});
-    var t6items=[];(window.SgcT6&&window.SgcT6.historiKirim||[]).forEach(function(d){(d.items||[]).forEach(function(it){if(it.batchKode===id)t6items.push({doc:d,it:it});});});
-    var root=p|| (dough&&plans.find(function(x){return x.noDok===dough.nomorInduk;})) || (batch&&plans.find(function(x){return x.noDok===batch.nomorInduk;})) || (t4&&plans.find(function(x){return x.noDok===t4.nomorInduk;}));
-    if(!p&&!dough&&!batch&&!t4&&!t5&&!t6items.length&&!root)return null;
-    var ni=(root&&root.noDok)||(dough&&dough.nomorInduk)||(batch&&batch.nomorInduk)||(t4&&t4.nomorInduk)||'';
-    var ex=execs.find(function(x){return x.noDok===ni;});
-    var timeline=[];
-    if(root||ni)timeline.push({stage:'Perencanaan / Induk',detail:ni+(root&&root.produk?' · '+root.produk:'')});
-    if(ex)timeline.push({stage:'Tahap 1 — Premix',detail:'Selesai '+(ex.tglProduksi||'')+' · '+(ex.pelaksana||'')});
-    if(dough)timeline.push({stage:'Tahap 2 — Dough',detail:dough.labelId+' · dibuat '+(dough.waktuBuat||'')+' · '+(dough.lokasiSimp||'')});
-    if(batch)timeline.push({stage:'Tahap 3 — Panggang',detail:batch.batchKode+' · selesai '+(batch.waktuSelesaiPanggang||batch.waktuOven||'')+' · yield '+(batch.yieldBersih||batch.yieldTotal||'')+' gr'});
-    if(t4)timeline.push({stage:'Tahap 4 — Penyimpanan',detail:(t4.jenisPenyimpanan||'')+' · '+(t4.rakLokasi||'')+' · '+(t4.waktuSimpan||'')});
-    if(t5)timeline.push({stage:'Tahap 5 — Pengemasan',detail:'Dikemas '+(t5.waktuKemas||'')+' · '+(t5.operatorKemas||'')});
-    t6items.forEach(function(z){timeline.push({stage:'Tahap 6 — Gudang',detail:z.doc.noSPB+' · '+z.it.jumlah+' '+z.it.satuan+' · '+(z.doc.waktuDibuat||'')});});
-    return {id:id,summary:'Induk: '+ni,timeline:timeline};
-  };
-  window.SgcThermal.openTrace=openTrace;
-
-  function addSettingsUi(){
-    if(!document.getElementById('nav-thermal-settings')){
-      var rb=document.getElementById('role-btn');
-      if(rb)rb.insertAdjacentHTML('beforebegin','<button class="nav-item" id="nav-thermal-settings" onclick="SgcThermal.openSettings()"><i class="ti ti-printer"></i>Printer Label</button>');
-    }
-    if(!document.getElementById('modal-thermal-settings')){
-      document.body.insertAdjacentHTML('beforeend','<div class="overlay" id="modal-thermal-settings"><div class="modal" style="max-width:460px"><div class="mhead"><h3>Pengaturan Printer Label</h3><button class="icn-btn" onclick="closeModal(\'modal-thermal-settings\')"><i class="ti ti-x"></i></button></div><div class="mbody"><div class="field"><label>Ukuran label thermal</label><select id="sgc-thermal-width"><option value="58">58 mm</option><option value="80">80 mm</option></select></div><div class="field"><label>Nama / identitas printer</label><input id="sgc-thermal-printer" placeholder="Contoh: Thermal Dapur 1"></div><div class="field"><label>Alamat Bluetooth printer</label><input id="sgc-thermal-printer-address" placeholder="Contoh: 00:11:22:33:44:55"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Diisi otomatis/manual dari daftar printer yang sudah dipair di Android Bridge.</div></div><div class="field"><label>Mode koneksi</label><select id="sgc-thermal-transport"><option value="auto">Otomatis: Bridge → BLE → Browser</option><option value="bridge">Android Bridge — Bluetooth Classic / SPP</option><option value="ble">Bluetooth BLE langsung</option><option value="browser">Browser / window.print()</option></select></div><div class="field"><label>Alamat Android Print Bridge</label><input id="sgc-thermal-bridge" value="http://localhost:9100" placeholder="http://localhost:9100"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">Dipakai untuk printer Bluetooth Classic ESC/POS seperti banyak Kassen/Xprinter/HOIN. Printer dipasangkan di Android, lalu bridge mengirim ESC/POS ke printer.</div></div><div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:8px"><button class="btn sm" onclick="SgcThermal.connectBluetooth()"><i class="ti ti-bluetooth"></i>Hubungkan Bluetooth BLE</button><button class="btn sm" onclick="SgcThermal.testConnection()"><i class="ti ti-plug-connected"></i>Test Koneksi</button></div><div style="margin-top:8px;font-size:10px">Status BLE: <span id="sgc-thermal-status"><span class="badge b-gray">Belum terhubung</span></span> · Bridge: <span id="sgc-thermal-bridge-status">Memeriksa…</span></div><label style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:8px"><input id="sgc-thermal-auto" type="checkbox" checked style="width:14px;height:14px"> Browser print otomatis jika mode Browser dipilih</label><div class="alert-box warn" style="margin-top:12px"><i class="ti ti-info-circle"></i><div><strong>PC tetap memakai window.print().</strong> Untuk HP, printer Bluetooth Classic umumnya membutuhkan Android print bridge; BLE tertentu bisa langsung dari Chrome Android. Tidak semua perangkat Bluetooth expose protokol ESC/POS yang sama.</div></div></div><div class="mfoot"><button class="btn" onclick="SgcThermal.testPrint()"><i class="ti ti-printer"></i>Test Print</button><button class="btn primary" onclick="SgcThermal.saveSettings()">Simpan Pengaturan</button></div></div></div>');
-    }
-    if(!document.getElementById('modal-trace'))document.body.insertAdjacentHTML('beforeend','<div class="overlay" id="modal-trace"><div class="modal" style="max-width:520px"><div class="mhead"><h3>Traceability Produksi</h3><button class="icn-btn" onclick="closeModal(\'modal-trace\')"><i class="ti ti-x"></i></button></div><div class="mbody"><div id="sgc-trace-content"></div></div><div class="mfoot"><button class="btn" onclick="closeModal(\'modal-trace\')">Tutup</button></div></div></div>');
-  }
-
-  function addT1Button(){
-    var f=document.querySelector('#modal-label .mfoot');if(!f||f.querySelector('.sgc-thermal-btn'))return;
-    f.insertAdjacentHTML('afterbegin','<button class="btn sgc-thermal-btn" onclick="SgcThermal.printT1(window._sgcThermalT1)"><i class="ti ti-printer"></i>Cetak Thermal</button>');
-  }
-  window.SgcThermal.printT1=function(noDok){
-    if(noDok&&typeof noDok==='object')noDok=noDok.noDok;
-    var p=(window.rencanaData||[]).find(function(x){return x.noDok===noDok;});if(!p)return alert('Data perencanaan tidak ditemukan.');
-    var r=(window.resepData||[])[p.resepIdx]||{};var e=(window.eksekusiData||[]).find(function(x){return x.noDok===noDok;})||{};
-    var obj=noDok+'-PX01';
-    SgcThermal.print({title:'LABEL PREMIX — TAHAP 1',subtitle:p.produk||r.nama,rows:[['ID Induk',noDok],['ID Tahap',obj],['Resep',r.nama||p.produk],['Jumlah',(p.batch||0)+' × resep'],['Produksi',e.tglProduksi||''],['Expired',e.tglExpired||''],['Pelaksana',e.pelaksana||'']],barcodes:[noDok,obj],barcodeLabels:['BARCODE INDUK','BARCODE TAHAP 1']});
-  };
-
-  function patchT1(){
-    if(typeof window.showLabelDoc!=='function'||window.showLabelDoc._thermal)return;
-    var orig=window.showLabelDoc;window.showLabelDoc=function(noDok){window._sgcThermalT1=noDok;var r=orig.apply(this,arguments);setTimeout(addT1Button,20);return r;};window.showLabelDoc._thermal=true;
-  }
-  window.SgcThermal.printT1Group=function(noDok,code){
-    var p=(window.rencanaData||[]).find(function(x){return x.noDok===noDok;});if(!p)return;
-    var r=(window.resepData||[])[p.resepIdx]||{};var groups=(r.tutorial&&r.tutorial.premix&&Array.isArray(r.tutorial.premix.groups))?r.tutorial.premix.groups:[];var g=groups.find(function(x){return String(x.code)===String(code);})||{code:code,name:''};
-    var obj=noDok+'-G'+code;
-    SgcThermal.print({title:'LABEL GRUP PREMIX — TAHAP 1',subtitle:'Kode '+code+' · '+(g.name||'Grup '+code),rows:[['ID Induk',noDok],['ID Grup',obj],['Kode Grup',code],['Resep',r.nama||p.produk],['Tujuan','Validasi Tahap 2']],barcodes:[noDok,obj],barcodeLabels:['BARCODE INDUK','BARCODE GRUP']});
-  };
-  window.SgcThermal.validateGroupScan=function(){
-    var inp=document.getElementById('sgc-t2-group-scan');var out=document.getElementById('sgc-t2-group-feedback');var code=((inp&&inp.value)||'').trim().toUpperCase();var ni=(window.SgcT2&&window.SgcT2.currentNI)||window.getNomorIndukAktif&&window.getNomorIndukAktif();
-    if(!code){if(out)out.innerHTML='<div class="alert-box warn" style="margin:0"><i class="ti ti-scan"></i><div>Masukkan atau scan barcode grup.</div></div>';return false;}
-    var p=(window.rencanaData||[]).find(function(x){return x.noDok===ni;});var r=p?(window.resepData||[])[p.resepIdx]:null;
-    var expected=[];if(r&&r.tutorial&&r.tutorial.premix&&Array.isArray(r.tutorial.premix.groups))expected=r.tutorial.premix.groups.map(function(g){return String(ni+'-G'+g.code).toUpperCase();});
-    var ok=expected.indexOf(code)>=0 || code===String(ni).toUpperCase();
-    if(out)out.innerHTML=ok?'<div class="alert-box ok" style="margin:0"><i class="ti ti-circle-check"></i><div><strong>Barcode grup valid.</strong> '+esc(code)+'</div></div>':'<div class="alert-box warn" style="margin:0"><i class="ti ti-alert-triangle"></i><div><strong>Barcode grup tidak sesuai.</strong> Scan tetap opsional pada versi uji coba.</div></div>';
-    return ok;
-  };
-  function addT2GroupScan(){
-    var area=document.getElementById('t2-active-area');if(!area||document.getElementById('sgc-t2-group-scan-wrap'))return;
-    var ni=(window.SgcT2&&window.SgcT2.currentNI)||'';
-    area.insertAdjacentHTML('afterbegin','<div id="sgc-t2-group-scan-wrap" class="card" style="margin-bottom:10px;border:1px dashed var(--border-strong)"><div class="card-body" style="padding:10px"><div style="font-size:11px;font-weight:700;margin-bottom:5px"><i class="ti ti-scan"></i> Scan Barcode Grup Premix <span class="badge b-gray">Opsional — uji coba</span></div><div style="display:flex;gap:7px"><input id="sgc-t2-group-scan" class="search" style="flex:1" placeholder="Scan contoh: [NomorInduk]-GA" onkeydown="if(event.key===\'Enter\')SgcThermal.validateGroupScan()"><button class="btn sm primary" onclick="SgcThermal.validateGroupScan()"><i class="ti ti-scan"></i>Validasi</button></div><div id="sgc-t2-group-feedback" style="margin-top:6px"></div></div></div>');
-  }
-
-  function patchT2(){
-    if(window.SgcT2&&typeof window.SgcT2.simpanDough==='function'&&!window.SgcT2.simpanDough._thermal){
-      var orig=window.SgcT2.simpanDough;window.SgcT2.simpanDough=function(){var result=orig.apply(this,arguments);setTimeout(function(){var vals=[];var rows=(window.SgcT2.stokDough||[]);rows.slice(-10).forEach(function(x){if(x&&x.labelId)vals.push(x.labelId);});if(vals.length){var box=document.getElementById('t2-ni-result');if(box&&!box.querySelector('.sgc-th-after-save')){box.insertAdjacentHTML('beforeend','<div class="sgc-th-after-save" style="margin-top:8px"><button class="btn sm" onclick="SgcThermal.printT2Batch('+JSON.stringify(vals).replace(/</g,'\\u003c')+')"><i class="ti ti-printer"></i>Cetak Thermal Label Dough Terakhir</button></div>');}}},60);return result;};window.SgcT2.simpanDough._thermal=true;
-    }
-  }
-  window.SgcThermal.printT2=function(labelId){
-    var d=(window.SgcT2&&window.SgcT2.stokDough||[]).find(function(x){return x.labelId===labelId;});if(!d)return;
-    var ni=d.nomorInduk||'';var p=(window.rencanaData||[]).find(function(x){return x.noDok===ni;});var r=p?(window.resepData||[])[p.resepIdx]:{};
-    SgcThermal.print({title:'LABEL DOUGH — TAHAP 2',subtitle:r&&r.nama||p&&p.produk||'',rows:[['ID Induk',ni],['ID Dough',d.labelId],['Resep',r&&r.nama||p&&p.produk||''],['Dibuat',d.waktuBuat||''],['Simpan',d.lokasiSimp||''],['Expired',d.expiredDough||'']],barcodes:[ni,d.labelId],barcodeLabels:['BARCODE INDUK','BARCODE DOUGH']});
-  };
-  window.SgcThermal.printT2Batch=function(a){(a||[]).forEach(function(id,i){setTimeout(function(){window.SgcThermal.printT2(id);},i*500);});};
-
-  function patchT3(){
-    if(!window.SgcT2||typeof window.SgcT2.refreshOvenDashboard!=='function'||window.SgcT2.refreshOvenDashboard._thermal)return;
-    var orig=window.SgcT2.refreshOvenDashboard;window.SgcT2.refreshOvenDashboard=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t3-histori-body .sgc-oven-row').forEach(function(row){if(row.querySelector('.sgc-th-t3'))return;var code=(row.querySelector('.sgc-or-lbl code')||{}).textContent;if(code)row.querySelector('.sgc-or-lbl').insertAdjacentHTML('afterend','<button class="btn sm sgc-th-t3" style="margin-top:5px" onclick="SgcThermal.printT3(\''+code.trim()+'\')"><i class="ti ti-printer"></i>Thermal</button>');});},30);return r;};window.SgcT2.refreshOvenDashboard._thermal=true;
-  }
-  window.SgcThermal.printT3=function(code){var b=(window.SgcT2&&window.SgcT2.batchList||[]).find(function(x){return x.batchKode===code;});if(!b)return;var ni=b.nomorInduk||'';var p=(window.rencanaData||[]).find(function(x){return x.noDok===ni;});var r=p?(window.resepData||[])[p.resepIdx]:{};SgcThermal.print({title:'LABEL HASIL PANGGANG — TAHAP 3',subtitle:r&&r.nama||p&&p.produk||'',rows:[['ID Induk',ni],['ID Batch',b.batchKode],['Resep',r&&r.nama||p&&p.produk||''],['Hasil',((b.yieldBersih!=null?b.yieldBersih:b.yieldTotal)||0)+' gr'],['Selesai',b.waktuSelesaiPanggang||''],['Operator',b.operatorOven||'']],barcodes:[ni,b.batchKode],barcodeLabels:['BARCODE INDUK','BARCODE BATCH']});};
-
-  window.SgcThermal.printT4=function(id){var it=(window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x.id===id;});if(!it)return;var ni=it.nomorInduk||'';SgcThermal.print({title:'LABEL PENYIMPANAN — TAHAP 4',subtitle:it.namaProduk||'',rows:[['ID Induk',ni],['ID Batch',it.batchKode],['Produk',it.namaProduk],['Hasil',Number(it.jumlahSiapKemas||0).toLocaleString('id-ID')+' '+(it.satuan||'')],['Simpan',window.T4_JENIS_LABEL&&window.T4_JENIS_LABEL[it.jenisPenyimpanan]||it.jenisPenyimpanan||''],['Rak',it.rakLokasi||''],['Waktu',it.waktuSimpan||''],['Expired',it.expiredPenyimpanan||''],['Penyimpan',it.namaPenyimpan||'']],barcodes:[ni,it.batchKode],barcodeLabels:['BARCODE INDUK','BARCODE BATCH']});};
-  function patchT4(){
-    if(!window.SgcT4||typeof window.SgcT4.refresh!=='function'||window.SgcT4.refresh._thermal)return;var orig=window.SgcT4.refresh;window.SgcT4.refresh=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t4-stok-tbody tr').forEach(function(tr){var b=tr.querySelector('td code');if(!b||tr.querySelector('.sgc-th-t4'))return;var code=b.textContent.trim();var it=(window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===code;});if(it){var td=tr.querySelector('td:last-child');if(td)td.insertAdjacentHTML('beforeend','<button class="btn sm sgc-th-t4" style="margin-left:4px" onclick="SgcThermal.printT4(\''+it.id+'\')"><i class="ti ti-printer"></i>Thermal</button>');}});},30);return r;};window.SgcT4.refresh._thermal=true;}
-
-  window.SgcThermal.printT5=function(id){var h=(window.SgcT5&&window.SgcT5.histori||[]).find(function(x){return x.id===id;});if(!h)return;var ni=((window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===h.batchKode;})||{}).nomorInduk||'';var first=(h.items||[])[0]||{};SgcThermal.print({title:'LABEL PRODUK — TAHAP 5',subtitle:h.namaProduk||'',rows:[['ID Induk',ni],['ID Batch',h.batchKode],['SKU',first.skuCode||''],['Jumlah',Number(first.jumlah||0)+' '+(first.satuan||'')],['Dikemas',h.waktuKemas||''],['Operator',h.operatorKemas||''],['Expired',h.tglExpired||'']],barcodes:[ni,h.batchKode+'-PK01'],barcodeLabels:['BARCODE INDUK','BARCODE TAHAP 5']});};
-  function patchT5(){if(!window.SgcT5||typeof window.SgcT5.renderHistori!=='function'||window.SgcT5.renderHistori._thermal)return;var orig=window.SgcT5.renderHistori;window.SgcT5.renderHistori=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t5-histori-body .t5-pkg-hist-row').forEach(function(row){if(row.querySelector('.sgc-th-t5'))return;var code=(row.querySelector('code')||{}).textContent;if(!code)return;var h=(window.SgcT5.histori||[]).find(function(x){return x.batchKode===code;});if(h)row.insertAdjacentHTML('beforeend','<button class="btn sm sgc-th-t5" style="margin-left:5px" onclick="SgcThermal.printT5(\''+h.id+'\')"><i class="ti ti-printer"></i>Thermal</button>');});},30);return r;};window.SgcT5.renderHistori._thermal=true;}
-
-  window.SgcThermal.printT6=function(id){var d=(window.SgcT6&&window.SgcT6.historiKirim||[]).find(function(x){return x.id===id;});if(!d)return;var first=(d.items||[])[0]||{};var ni=((window.SgcT4&&window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===first.batchKode;})||{}).nomorInduk||'';SgcThermal.print({title:'LABEL GUDANG — TAHAP 6',subtitle:first.namaProduk||'',rows:[['ID Induk',ni],['No. SPB',d.noSPB],['ID Batch',first.batchKode||''],['SKU',first.skuCode||''],['Jumlah',Number(first.jumlah||0)+' '+(first.satuan||'')],['Dikirim',d.waktuDibuat||''],['Admin',d.admin||'']],barcodes:[ni,first.batchKode||d.noSPB],barcodeLabels:['BARCODE INDUK','BARCODE BATCH']});};
-  function patchT6(){if(!window.SgcT6||typeof window.SgcT6.renderHistori!=='function'||window.SgcT6.renderHistori._thermal)return;var orig=window.SgcT6.renderHistori;window.SgcT6.renderHistori=function(){var r=orig.apply(this,arguments);setTimeout(function(){document.querySelectorAll('#t6-histori-body .t5-pkg-hist-row').forEach(function(row){if(row.querySelector('.sgc-th-t6'))return;var code=(row.querySelector('code')||{}).textContent;if(!code)return;var d=(window.SgcT6.historiKirim||[]).find(function(x){return x.noSPB===code;});if(d)row.querySelector('div:last-child').insertAdjacentHTML('beforeend','<button class="btn sm sgc-th-t6" style="margin-left:5px" onclick="SgcThermal.printT6(\''+d.id+'\')"><i class="ti ti-printer"></i>Thermal</button>');});},30);return r;};window.SgcT6.renderHistori._thermal=true;}
-
-  function addScanTools(){
-    if(document.getElementById('sgc-trace-tool'))return;
-    var top=document.querySelector('.topbar-right');if(!top)return;
-    top.insertAdjacentHTML('afterbegin','<button class="btn sm" id="sgc-trace-tool" onclick="SgcThermal.scanPrompt()"><i class="ti ti-scan"></i>Scan / Trace</button>');
-  }
-  window.SgcThermal.scanPrompt=function(){var id=prompt('Scan/masukkan Barcode Induk atau Barcode Tahap:');if(id)SgcThermal.openTrace(id);};
-
-  function renderPremixGroupButtons(){
-    document.querySelectorAll('[data-premix-card]').forEach(function(card){
-      if(card.querySelector('.sgc-th-group'))return;
-      var code=card.getAttribute('data-premix-card');var step=card.closest('[data-progress-key]');var key=step&&step.getAttribute('data-progress-key')||'';var noDok=key.replace(/_premix_progress$/,'');
-      if(!noDok||!code)return;
-      var progress={};try{progress=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch(e){}
-      if(!progress[code])return;
-      card.insertAdjacentHTML('beforeend','<button type="button" class="btn sm sgc-th-group" style="margin-top:8px" onclick="SgcThermal.printT1Group(\''+noDok+'\',\''+String(code).replace(/'/g,'\\\'')+'\')"><i class="ti ti-printer"></i>Cetak Thermal Label Grup '+esc(code)+'</button>');
-    });
-  }
-  function patchPremixGroups(){
-    if(typeof window.selesaiPremixKode!=='function'||window.selesaiPremixKode._thermal)return;
-    var orig=window.selesaiPremixKode;window.selesaiPremixKode=function(progressKey,code){var r=orig.apply(this,arguments);setTimeout(function(){var p=(window.rencanaData||[]).find(function(x){return progressKey.indexOf(x.noDok+'_premix_progress')===0;});if(!p)return;var card=document.querySelector('[data-premix-card="'+String(code).replace(/"/g,'\\"')+'"]');if(card&&!card.querySelector('.sgc-th-group'))card.insertAdjacentHTML('beforeend','<button type="button" class="btn sm sgc-th-group" style="margin-top:8px" onclick="SgcThermal.printT1Group(\''+p.noDok+'\',\''+String(code).replace(/'/g,'\\\'')+'\')"><i class="ti ti-printer"></i>Cetak Thermal Label Grup '+esc(code)+'</button>');},50);return r;};window.selesaiPremixKode._thermal=true;
-  }
-  function patchT2Scan(){
-    if(!window.SgcT2||typeof window.SgcT2.cariNomorInduk!=='function'||window.SgcT2.cariNomorInduk._thermalGroup)return;
-    var orig=window.SgcT2.cariNomorInduk;window.SgcT2.cariNomorInduk=function(){var r=orig.apply(this,arguments);setTimeout(function(){addT2GroupScan();},50);return r;};window.SgcT2.cariNomorInduk._thermalGroup=true;
-  }
-  function init(){addSettingsUi();addScanTools();patchT1();patchPremixGroups();patchT2();patchT2Scan();patchT3();patchT4();patchT5();patchT6();addT2GroupScan();renderPremixGroupButtons();}
-  setTimeout(init,400);
-  setTimeout(init,1500);
-  setTimeout(init,3000);
+  function canvasBarcode(svgString,maxWidth){return new Promise(function(resolve,reject){if(!svgString){resolve(null);return;}var blob=new Blob([svgString],{type:'image/svg+xml'}),url=URL.createObjectURL(blob),img=new Image();img.onload=function(){URL.revokeObjectURL(url);var scale=Math.min(1,maxWidth/img.width);resolve({img:img,w:Math.max(1,Math.round(img.width*scale)),h:Math.max(1,Math.round(img.height*scale))});};img.onerror=function(){URL.revokeObjectURL(url);reject(new Error('Barcode gagal dirender.'));};img.src=url;});}
+  function makeCanvas(spec){var paper=SgcThermal.paper==='80'?'80':'58',W=paper==='80'?576:384,rows=spec.rows||[],bar=spec.barcode||'',left=16,right=W-16,y=18,line=30,gap=8,h=150+rows.length*line+gap*2+30,c=document.createElement('canvas');c.width=W;c.height=h;var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,W,h);x.fillStyle='#000';x.textAlign='center';x.font='bold 34px Arial';x.fillText('SASAGU',W/2,y+30);y+=62;x.font='bold 20px Arial';x.fillText(spec.title||'LABEL PRODUKSI',W/2,y);y+=22;x.strokeStyle='#000';x.lineWidth=2;x.beginPath();x.moveTo(left,y+8);x.lineTo(right,y+8);x.stroke();y+=28;x.textAlign='left';rows.forEach(function(r){var label=String(r[0]||''),value=String(r[1]||'');x.font='bold 16px Arial';x.fillText(label,left,y);x.font='16px Arial';x.textAlign='right';if(value.length>30){var parts=value.match(/.{1,18}(?:\s+|$)/g)||[value];parts.forEach(function(part,idx){if(idx>0)y+=20;x.fillText(part.trim(),right,y);});}else{x.fillText(value,right,y);}x.textAlign='left';y+=line;});return{canvas:c,barcodeText:bar,barcodeMax:W-28};}
+  async function renderLabel(spec){var base=makeCanvas(spec),c=base.canvas,x=c.getContext('2d'),svg=(typeof genBarcode==='function')?genBarcode(base.barcodeText||''):'',b=await canvasBarcode(svg,base.barcodeMax),extra=b?b.h+55:35,oldH=c.height,nc=document.createElement('canvas');nc.width=c.width;nc.height=oldH+extra;var n=nc.getContext('2d');n.fillStyle='#fff';n.fillRect(0,0,nc.width,nc.height);n.drawImage(c,0,0);var y=oldH+5;n.textAlign='center';n.fillStyle='#000';n.font='bold 15px Arial';n.fillText('BARCODE',nc.width/2,y+12);if(b){var bx=(nc.width-b.w)/2;n.drawImage(b.img,bx,y+18,b.w,b.h);y+=18+b.h+15;}n.font='bold 16px monospace';n.fillText(base.barcodeText||'',nc.width/2,y+10);return nc;}
+  function raster(canvas){var ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height,rb=Math.ceil(w/8),im=ctx.getImageData(0,0,w,h),data=new Uint8Array(rb*h);for(var yy=0;yy<h;yy++)for(var xx=0;xx<w;xx++){var ii=(yy*w+xx)*4,lum=.299*im.data[ii]+.587*im.data[ii+1]+.114*im.data[ii+2];if(lum<180)data[yy*rb+(xx>>3)]|=128>>(xx&7);}return cat(bytes(29,118,48,0,rb&255,(rb>>8)&255,h&255,(h>>8)&255),data);}
+  var INIT=bytes(27,64),LEFT=bytes(27,97,0),FEED=bytes(27,100,3),CUT=bytes(29,86,66,0);
+  SgcThermal.printSpec=async function(spec){var c=await renderLabel(spec);await SgcThermal.write(cat(INIT,LEFT,raster(c),FEED,CUT));log('Label thermal berhasil dikirim.');};
+  SgcThermal.printT1=async function(noDok){var p=(window.rencanaData||[]).find(function(a){return a.noDok===noDok;});if(!p)throw new Error('Nomor induk tidak ditemukan.');var r=(window.resepData||[])[p.resepIdx]||{},eks=(window.eksekusiData||[]).find(function(a){return a.noDok===noDok;})||{};await SgcThermal.printSpec({title:'LABEL IDENTITAS PRODUK — TAHAP 1',barcode:noDok,rows:[['ID INDUK',noDok],['Nama Produk',p.produk],['SKU',p.sku],['Jumlah',(p.batch||1)+' x resep ('+((r.yield||0)*(p.batch||1)).toLocaleString('id-ID')+' '+(r.yieldSat||'')+')'],['Produksi',typeof fmtDateTime==='function'?fmtDateTime(eks.tglProduksi):eks.tglProduksi||'—'],['Expired',typeof fmtDate==='function'?fmtDate(eks.tglExpired):eks.tglExpired||'—'],['Pelaksana',eks.pelaksana||'—']]});};
+  SgcThermal.printT4=async function(id){var S4=window.SgcT4,it=S4&&S4.stokSimpan?S4.stokSimpan.find(function(x){return x.id===id;}):null;if(!it)throw new Error('Data penyimpanan tidak ditemukan.');var jenis=(window.T4_JENIS_LABEL||{})[it.jenisPenyimpanan]||it.jenisPenyimpanan||'—';await SgcThermal.printSpec({title:'LABEL PENYIMPANAN — TAHAP 4',barcode:it.batchKode,rows:[['Kode Batch',it.batchKode],['ID Induk',it.nomorInduk],['Nama Produk',it.namaProduk],['Jumlah',Number(it.jumlahSiapKemas).toLocaleString('id-ID')+' '+(it.satuan||'')],['Penyimpanan',jenis],['Letak Rak',it.rakLokasi||'—'],['Disimpan Oleh',it.namaPenyimpan||'—'],['Waktu',typeof t4TsLabel==='function'?t4TsLabel(it.waktuSimpan):it.waktuSimpan||'—'],['Expired',it.expiredPenyimpanan?(typeof t4TsLabel==='function'?t4TsLabel(it.expiredPenyimpanan):it.expiredPenyimpanan):'Belum diatur']]});};
+  SgcThermal.testPrint=async function(){await SgcThermal.printSpec({title:'THERMAL TEST',barcode:'SASAGU-TEST-001',rows:[['Kertas',SgcThermal.paper+' mm'],['Koneksi','Bluetooth BLE'],['Metode','Web Bluetooth'],['Status','TEST BERHASIL']]});};
+  SgcThermal.openSettings=function(){var old=document.getElementById('sgc-thermal-modal');if(old)old.remove();var div=document.createElement('div');div.id='sgc-thermal-modal';div.className='overlay open';div.innerHTML='<div class="modal" style="max-width:440px"><div class="mhead"><h3><i class="ti ti-printer"></i> Printer Thermal</h3><button class="icn-btn" id="sgc-th-close"><i class="ti ti-x"></i></button></div><div class="mbody"><div id="sgc-thermal-status" class="sgc-th-status warn">Memeriksa...</div><div id="sgc-thermal-log" style="display:none;font-size:11px;margin-top:8px;color:var(--text-secondary)"></div><div class="field" style="margin-top:12px"><label>Ukuran kertas</label><select id="sgc-th-paper"><option value="58">58 mm</option><option value="80">80 mm</option></select></div><div class="field"><label>Mode koneksi</label><select id="sgc-th-mode"><option value="ble">Bluetooth BLE — seperti MAGOJI</option><option value="serial">Web Serial / SPP</option></select></div><div style="font-size:10px;color:var(--text-muted);line-height:1.5;margin-top:8px">Mode BLE memakai pola MAGOJI: pilih perangkat Bluetooth, cari service printer umum, cari characteristic write/writeWithoutResponse, lalu kirim ESC/POS dalam potongan 120 byte.</div></div><div class="mfoot"><button class="btn" id="sgc-th-reconnect">Gunakan Printer Tersimpan</button><button class="btn" id="sgc-th-connect">Hubungkan Bluetooth</button><button class="btn success" id="sgc-th-test">Test Print</button><button class="btn" id="sgc-th-save">Simpan</button></div></div>';document.body.appendChild(div);document.getElementById('sgc-th-paper').value=SgcThermal.paper;document.getElementById('sgc-th-close').onclick=function(){div.remove();};document.getElementById('sgc-th-paper').onchange=function(){SgcThermal.paper=this.value;localStorage.setItem('sgc_thermal_paper',SgcThermal.paper);};document.getElementById('sgc-th-connect').onclick=async function(){try{var mode=document.getElementById('sgc-th-mode').value;if(mode==='serial')await SgcThermal.connectSerial();else await SgcThermal.connectBLE();SgcThermal.updateStatus();alert('Printer berhasil terhubung.');}catch(e){SgcThermal.updateStatus();log('GAGAL HUBUNG: '+e.message);alert('Gagal menghubungkan printer:\n\n'+e.message);}};document.getElementById('sgc-th-reconnect').onclick=async function(){try{await SgcThermal.reconnect();SgcThermal.updateStatus();alert('Printer tersimpan berhasil digunakan.');}catch(e){alert(e.message);}};document.getElementById('sgc-th-test').onclick=async function(){try{await SgcThermal.testPrint();alert('Test print dikirim ke printer.');}catch(e){log('GAGAL TEST PRINT: '+e.message);alert('Test print gagal:\n\n'+e.message);}};document.getElementById('sgc-th-save').onclick=function(){localStorage.setItem('sgc_thermal_paper',SgcThermal.paper);div.remove();};SgcThermal.updateStatus();};
+  if(navigator.serial){try{navigator.serial.addEventListener('disconnect',function(ev){if(SgcThermal.port&&ev.target===SgcThermal.port){SgcThermal.port=null;if(SgcThermal.writer){try{SgcThermal.writer.releaseLock();}catch(e){}SgcThermal.writer=null;}SgcThermal.updateStatus();}});}catch(e){}}
+  SgcThermal.addButtons=function(){var m=document.querySelector('#modal-label .mfoot');if(m&&!document.getElementById('btn-sgc-thermal-label')){var b=document.createElement('button');b.id='btn-sgc-thermal-label';b.className='btn success';b.innerHTML='<i class="ti ti-printer"></i> Thermal';b.onclick=function(){var p=(window.rencanaData||[]).find(function(a){var e=(window.eksekusiData||[]).find(function(x){return x.noDok===a.noDok;});return e&&document.getElementById('label-content')&&document.getElementById('label-content').innerText.indexOf(a.noDok)>=0;});if(p)SgcThermal.printT1(p.noDok).catch(function(e){alert('Thermal gagal: '+e.message);});else alert('Label Tahap 1 tidak ditemukan.');};m.insertBefore(b,m.firstChild);}var t4=document.querySelector('#modal-t4-simpan .mfoot');if(t4&&!document.getElementById('btn-sgc-thermal-settings')){var b2=document.createElement('button');b2.id='btn-sgc-thermal-settings';b2.className='btn';b2.innerHTML='<i class="ti ti-settings"></i> Printer Thermal';b2.onclick=SgcThermal.openSettings;t4.insertBefore(b2,t4.firstChild);}};
+  document.addEventListener('DOMContentLoaded',function(){SgcThermal.addButtons();SgcThermal.updateStatus();});setTimeout(SgcThermal.addButtons,800);setTimeout(SgcThermal.addButtons,1800);window.openThermalSettings=SgcThermal.openSettings;
 })();
 </script>
-
+<style>
+.sgc-th-status{padding:9px 11px;border-radius:7px;font-size:11px;font-weight:600}.sgc-th-status.ok{background:#E8F5E9;color:#166534}.sgc-th-status.warn{background:#FFF3E0;color:#9A3412}.sgc-th-status.bad{background:#FFEBEE;color:#B91C1C}
+</style>
 </body>
 </html>
