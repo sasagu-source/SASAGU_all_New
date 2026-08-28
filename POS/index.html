@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>POS SASAGU (Baru) — Sistem Penjualan Sasagu</title>
+<title>POS SASAGU V1.8 — Sistem Penjualan Sasagu</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
 
 <!-- ===== FIREBASE SDK ===== -->
@@ -1522,7 +1522,7 @@ const TIPE_DISKON_DEFAULT = { umum:0, reseller:5, agen:10, distributor:15, konsi
 ===================================================================== */
 const DEFAULT_SETTINGS = {
   brand:{
-    nama:'POS SASAGU',
+    nama:'SASAGU',
     tagline:'Sistem Penjualan Sasagu',
     alamat:'',
     telp:'0811-480-4300',
@@ -1553,7 +1553,7 @@ function getSettings(){
   return DB.settings;
 }
 
-// Render "Nama Usaha" jadi 2 warna seperti style asli "POS SASAGU" (kata pertama
+// Render "Nama Usaha" jadi 2 warna seperti style asli "SASAGU" (kata pertama
 // normal, sisanya diberi warna aksen) — dipakai di header faktur, surat jalan & lap. shift
 function brandHtmlBig(nama, color){
   nama = nama||'POS USAHA';
