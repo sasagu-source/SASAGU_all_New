@@ -830,7 +830,7 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
 <!-- RESEP -->
 <div class="page" id="page-resep">
   <div class="toolbar">
-    <button class="btn primary" id="btn-add-resep" onclick="openModal('modal-resep')"><i class="ti ti-plus" aria-hidden="true"></i>Tambah resep</button>
+    <button class="btn primary" id="btn-add-resep" onclick="openResepPicker()"><i class="ti ti-plus" aria-hidden="true"></i>Tambah resep</button>
     <input class="search" placeholder="Cari nama produk…" id="resep-search" oninput="renderResep()">
     <div class="pill-row" style="margin:0">
       <button class="pill active" onclick="fResep('all',this)">Semua</button>
@@ -1044,6 +1044,22 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
   </div>
 </div>
 
+<!-- MODAL: PILIH / BUAT RESEP -->
+<div class="overlay" id="modal-pilih-resep">
+  <div class="modal" style="max-width:560px">
+    <div class="mhead"><h3>Pilih resep</h3><button class="icn-btn" onclick="closeModal('modal-pilih-resep')"><i class="ti ti-x"></i></button></div>
+    <div class="mbody">
+      <div class="alert-box" style="margin:0 0 10px"><i class="ti ti-info-circle"></i><div>Kalau resepnya sudah ada, pilih resep tersebut. Sistem akan membuka resep yang sama untuk dilanjutkan — <strong>bukan membuat salinan baru</strong>.</div></div>
+      <div class="field"><label>Cari resep</label><input id="resep-picker-search" placeholder="Cari nama atau SKU…" oninput="renderResepPicker()"></div>
+      <div id="resep-picker-list"></div>
+    </div>
+    <div class="mfoot" style="justify-content:space-between">
+      <button class="btn" onclick="closeModal('modal-pilih-resep')">Batal</button>
+      <button class="btn primary" onclick="buatResepBaru()"><i class="ti ti-plus"></i>Buat Resep Baru</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL: RESEP -->
 <div class="overlay" id="modal-resep">
   <div class="modal modal-lg">
@@ -1052,7 +1068,7 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
       <input type="hidden" id="mr-idx" value="-1">
       <div class="field-row">
         <div class="field"><label>Nama produk <span style="color:red">*</span></label><input id="mr-nama" placeholder="Ultimate Vanilla Sago Cookies"></div>
-        <div class="field"><label>SKU / kode produk <span style="color:red">*</span></label><input id="mr-sku" placeholder="SKU001" oninput="this.value=this.value.toUpperCase()"></div>
+        <div class="field"><label>SKU / kode produk <span style="color:red">*</span></label><input id="mr-sku" placeholder="Dibuat otomatis oleh sistem" readonly aria-readonly="true" style="background:var(--surface-1);font-weight:700;cursor:not-allowed"><div style="font-size:10px;color:var(--text-muted);margin-top:4px">SKU dibuat otomatis oleh sistem dan tidak dapat diubah staff.</div></div>
       </div>
       <div class="field-row3">
         <div class="field"><label>Jenis</label><select id="mr-jenis"><option value="premix">Premix</option><option value="cookies">Cookies</option></select></div>
@@ -2144,16 +2160,80 @@ function updateRPreview(){
   });
 }
 
+/* ───────────── ALUR TAMBAH RESEP — PILIH DULU, BARU BUAT ───────────── */
+function openResepPicker(){
+  if(currentRole!=='owner'){alert('Hanya owner yang dapat mengelola Resep Master.');return;}
+  var inp=document.getElementById('resep-picker-search');
+  if(inp)inp.value='';
+  renderResepPicker();
+  openModal('modal-pilih-resep');
+}
+function renderResepPicker(){
+  var box=document.getElementById('resep-picker-list'); if(!box)return;
+  var q=(document.getElementById('resep-picker-search').value||'').trim().toLowerCase();
+  var rows=(window.resepData||resepData||[]).map(function(r,i){return {r:r,i:i};}).filter(function(x){
+    var r=x.r; return !q || String(r.nama||'').toLowerCase().includes(q) || String(r.sku||'').toLowerCase().includes(q);
+  });
+  if(!rows.length){
+    box.innerHTML='<div class="empty-state"><i class="ti ti-notebook-off"></i>'+(q?'Resep tidak ditemukan. Jika benar-benar resep baru, gunakan tombol “Buat Resep Baru”.':'Belum ada resep. Buat resep pertama dengan tombol di bawah.')+'</div>';
+    return;
+  }
+  box.innerHTML=rows.map(function(x){
+    var r=x.r;
+    return '<button type="button" class="sgc-resep-picker-item" onclick="pilihResepExist('+x.i+')">'+
+      '<div class="sgc-resep-picker-copy"><strong>'+escHtml(r.nama||'Tanpa nama')+'</strong><span>'+escHtml(r.sku||'-')+' · '+escHtml(r.jenis||'-')+'</span></div>'+
+      '<i class="ti ti-chevron-right"></i></button>';
+  }).join('');
+}
+function pilihResepExist(idx){
+  if(!resepData[idx])return;
+  closeModal('modal-pilih-resep');
+  editResep(idx);
+}
+function getExistingRecipeSkus(){
+  var arr=window.resepData||resepData||[];
+  return arr.map(function(r){return String(r&&r.sku||'').trim().toUpperCase();}).filter(Boolean);
+}
+function genKodeResep(){
+  var skus=getExistingRecipeSkus();
+  /* Pertahankan pola SKU resep yang memang sudah dipakai. SSG-053 ditemukan
+     sebagai SKU resep di aplikasi; jangan membuat pola baru yang berbeda. */
+  var candidates=skus.map(function(s){var m=s.match(/^(.*?)(\d+)$/);return m?{prefix:m[1],num:parseInt(m[2],10),width:m[2].length}:null;}).filter(Boolean);
+  var best=candidates.length?candidates.sort(function(a,b){return b.num-a.num;})[0]:null;
+  var prefix=best?best.prefix:'SSG-';
+  var width=best?Math.max(3,best.width):3;
+  var max=best?best.num:0;
+  var used={};skus.forEach(function(s){used[s]=true;});
+  var n=max+1, sku='';
+  do{sku=prefix+String(n).padStart(width,'0');n++;}while(used[sku]);
+  return sku;
+}
+function buatResepBaru(){
+  closeModal('modal-pilih-resep');
+  clearResepForm();
+  var sku=genKodeResep();
+  document.getElementById('mr-sku').value=sku;
+  document.getElementById('mr-sku').readOnly=true;
+  document.getElementById('mr-title').textContent='Buat resep master baru';
+  openModal('modal-resep');
+  updateRPreview();
+}
+
 function saveResep(){
   var nama=document.getElementById('mr-nama').value.trim();
-  var sku=document.getElementById('mr-sku').value.trim();
+  var sku=document.getElementById('mr-sku').value.trim().toUpperCase();
+  var idx=parseInt(document.getElementById('mr-idx').value);
+  if(idx<0 && !sku) sku=genKodeResep();
   if(!nama||!sku){alert('Nama produk dan SKU wajib diisi');return;}
+  document.getElementById('mr-sku').value=sku;
+  /* SKU tidak boleh menunjuk ke resep lain. Ini guard kedua selain readonly. */
+  var duplicate=(window.resepData||resepData||[]).some(function(r,i){return i!==idx && String(r.sku||'').toUpperCase()===sku;});
+  if(duplicate){alert('SKU '+sku+' sudah dipakai resep lain. Form dibatalkan agar resep lama tidak tertimpa.');return;}
   var bahan=getIngsFromForm();
   if(!bahan.length){alert('Tambahkan minimal 1 bahan');return;}
   var tut=getTutFromForm();
   var expDough=tut._expiredDough||null;
   delete tut._expiredDough;
-  var idx=parseInt(document.getElementById('mr-idx').value);
   var obj={nama:nama,sku:sku,jenis:document.getElementById('mr-jenis').value,
     yield:parseFloat(document.getElementById('mr-yield').value)||0,
     yieldSat:document.getElementById('mr-yield-sat').value,
@@ -2179,7 +2259,7 @@ function editResep(idx){
   if(currentRole!=='owner'){alert('Hanya owner yang dapat mengedit resep.');return;}
   var r=resepData[idx];
   document.getElementById('mr-idx').value=idx;
-  document.getElementById('mr-nama').value=r.nama;document.getElementById('mr-sku').value=r.sku;
+  document.getElementById('mr-nama').value=r.nama;document.getElementById('mr-sku').value=r.sku;document.getElementById('mr-sku').readOnly=true;
   document.getElementById('mr-jenis').value=r.jenis;document.getElementById('mr-yield').value=r.yield;
   document.getElementById('mr-yield-sat').value=r.yieldSat;document.getElementById('mr-catatan').value=r.catatan||'';
   var ps=document.getElementById('mr-premix-shelf-life');if(ps)ps.value=r.premixShelfLifeDays||'';
@@ -3342,6 +3422,25 @@ function doLogin(){
   border-radius:10px;padding:2px 7px;font-weight:600;white-space:nowrap}
 
 <style>
+.sgc-resep-picker-item{width:100%;display:flex;align-items:center;gap:10px;text-align:left;border:1px solid var(--border);background:#fff;border-radius:10px;padding:12px;margin-bottom:8px;cursor:pointer;transition:.15s}
+.sgc-resep-picker-item:hover{border-color:var(--brand);background:var(--brand-light)}
+.sgc-resep-picker-copy{min-width:0;flex:1}.sgc-resep-picker-copy strong{display:block;font-size:13px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sgc-resep-picker-copy span{display:block;font-size:10px;color:var(--text-muted);margin-top:3px}
+@media(max-width:700px){
+  #modal-resep .modal-lg{width:calc(100vw - 20px);max-width:none;margin:10px}
+  #modal-resep .mbody{padding:12px;overflow-x:hidden}
+  #modal-resep .field-row,#modal-resep .field-row3{display:block}
+  #modal-resep .field-row>.field,#modal-resep .field-row3>.field{width:100%;margin-bottom:10px}
+  .sgc-premix-preview-card{padding:10px;border-radius:9px}
+  .sgc-premix-preview-card table{display:block;width:100%!important;border:0}
+  .sgc-premix-preview-card table thead{display:none}
+  .sgc-premix-preview-card table tbody,.sgc-premix-preview-card table tr,.sgc-premix-preview-card table td{display:block;width:100%;box-sizing:border-box}
+  .sgc-premix-preview-card table tr{border:1px solid var(--border);border-radius:8px;padding:8px;margin:7px 0;background:var(--surface-1)}
+  .sgc-premix-preview-card table td{padding:2px 0!important;text-align:left!important;border:0!important}
+  .sgc-premix-preview-card table td:nth-child(2){font-size:15px;font-weight:700!important;margin-top:3px}
+  .sgc-premix-preview-card table td:nth-child(3){font-size:10px;color:var(--text-muted)}
+  .sgc-premix-preview-card>div:first-child{align-items:flex-start!important;flex-wrap:wrap}
+  .sgc-premix-preview-card>div:first-child .badge{margin-left:0!important}
+}
 .sgc-premix-editor{margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:10px;background:#fff}
 .sgc-premix-group{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden}
 .sgc-premix-group-head{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--brand-light);border-bottom:1px solid var(--brand-mid)}
