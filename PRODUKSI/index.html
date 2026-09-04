@@ -83,6 +83,40 @@ body{font-family:var(--font-sans,system-ui,sans-serif);background:var(--surface-
 .card-head{padding:12px 16px;border-bottom:.5px solid var(--border,#E0DDD6);display:flex;align-items:center;justify-content:space-between}
 .card-body{padding:14px 16px}
 .table-wrap{border:.5px solid var(--border,#E0DDD6);border-radius:10px;overflow:hidden;overflow-x:auto}
+/* Scroll horizontal tabel Tahap 1–6: jangan potong kolom di layar sempit. */
+.sgc-stage-hscroll{
+  width:100%;
+  max-width:100%;
+  overflow-x:auto;
+  overflow-y:hidden;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior-x:contain;
+  touch-action:pan-x;
+  scrollbar-width:thin;
+}
+.sgc-stage-hscroll > table{
+  margin:0;
+}
+@media(max-width:860px){
+  .sgc-stage-hscroll > table{
+    width:max-content !important;
+    min-width:100%;
+  }
+  .sgc-stage-hscroll > table th,
+  .sgc-stage-hscroll > table td{
+    white-space:nowrap;
+  }
+  .sgc-stage-scroll-hint{
+    display:block !important;
+  }
+}
+.sgc-stage-scroll-hint{
+  display:none;
+  margin:6px 2px 0;
+  font-size:10px;
+  color:var(--text-muted);
+}
+
 table{width:100%;border-collapse:collapse}
 th{text-align:left;padding:8px 12px;background:var(--surface-1,#F5F4F0);color:var(--text-secondary,#666);font-weight:500;font-size:11px;border-bottom:.5px solid var(--border)}
 td{padding:9px 12px;border-bottom:.5px solid var(--border);vertical-align:middle}
@@ -2437,6 +2471,7 @@ function openKonversi(ridx){
 function buildKonversiTableHtml(r,qty){
   var html='<div style="background:var(--surface-1);border:.5px solid var(--border);border-radius:8px;padding:14px;margin-bottom:10px">';
   html+='<div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">Resep dikonversi untuk <strong>'+qty+' × resep</strong> | Yield total: <strong>'+(r.yield*qty).toLocaleString('id-ID')+' '+r.yieldSat+'</strong></div>';
+  html+='<div class="sgc-stage-hscroll">';
   html+='<table style="font-size:12px;width:100%;border-collapse:collapse"><thead><tr>'+
     '<th style="padding:5px 8px;background:var(--surface-1);text-align:left;font-size:10px">Kode</th>'+
     '<th style="padding:5px 8px;background:var(--surface-1);text-align:left;font-size:10px">Nama Bahan</th>'+
@@ -2593,6 +2628,42 @@ function renderSaranRencana(){
    sudah ada di memori — tidak menambah operasi simpan/tulis data baru,
    jadi tidak ada risiko race condition baru dari fitur tampilan ini.
    ══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+   TABEL TAHAP 1–6 — horizontal scroll
+   Semua tabel operasional di halaman tahap dibungkus agar pada layar
+   sempit operator dapat menggeser kiri/kanan dan tetap melihat seluruh
+   kolom. Tabel yang sudah memiliki wrapper scroll tidak disentuh.
+   ══════════════════════════════════════════════════════════════════ */
+function sgcMakeStageTablesScrollable(){
+  var roots=['page-mulai','page-t2','page-t3','page-t4','page-t5','page-t6'];
+  roots.forEach(function(id){
+    var root=document.getElementById(id);
+    if(!root)return;
+    root.querySelectorAll('table').forEach(function(table){
+      if(table.closest('.sgc-stage-hscroll,.table-wrap,[style*="overflow-x:auto"]'))return;
+      var wrap=document.createElement('div');
+      wrap.className='sgc-stage-hscroll';
+      table.parentNode.insertBefore(wrap,table);
+      wrap.appendChild(table);
+      var hint=document.createElement('div');
+      hint.className='sgc-stage-scroll-hint';
+      hint.textContent='Geser kiri/kanan untuk melihat kolom lainnya →';
+      wrap.parentNode.insertBefore(hint,wrap.nextSibling);
+    });
+  });
+}
+
+function sgcWatchStageTables(){
+  sgcMakeStageTablesScrollable();
+  if(window.MutationObserver){
+    var observer=new MutationObserver(function(){sgcMakeStageTablesScrollable();});
+    ['page-mulai','page-t2','page-t3','page-t4','page-t5','page-t6'].forEach(function(id){
+      var root=document.getElementById(id);
+      if(root)observer.observe(root,{childList:true,subtree:true});
+    });
+  }
+}
+
 function renderMpAntrian(){
   var box=document.getElementById('mp-antrian-body');
   if(!box) return;
@@ -3020,7 +3091,8 @@ function loadEksekusiForm(ridx){
       '<td style="padding:6px 10px;border:.5px solid var(--border);text-align:right;font-weight:500">'+totalQty+' '+item.sat+'</td>'+
       '</tr>';
   });
-  html+='</tbody></table>';
+  html+='</tbody></table></div>';
+  html+='<div class="sgc-stage-scroll-hint">Geser kiri/kanan untuk melihat kolom lainnya →</div>';
   html+='</div></div>'; /* tutup sgc-subsec a */
 
   /* ══════════════════════════════════════════════════════════════
@@ -11207,5 +11279,10 @@ setInterval(boot,900);
 <style>
 .sgc-th-status{padding:9px 11px;border-radius:7px;font-size:11px;font-weight:600}.sgc-th-status.ok{background:#E8F5E9;color:#166534}.sgc-th-status.warn{background:#FFF3E0;color:#9A3412}.sgc-th-status.bad{background:#FFEBEE;color:#B91C1C}
 </style>
+<script>
+document.addEventListener('DOMContentLoaded',function(){
+  if(typeof sgcWatchStageTables==='function') sgcWatchStageTables();
+});
+</script>
 </body>
 </html>
