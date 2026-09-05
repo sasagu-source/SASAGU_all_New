@@ -63,6 +63,7 @@ body{font-family:var(--font-sans,system-ui,sans-serif);background:var(--surface-
 .btn.success{background:var(--green);color:#fff;border-color:var(--green)}
 .btn.danger{color:var(--red);border-color:#F5C6C6}
 .btn.danger:hover{background:var(--red-light)}
+.sgc-pwi-step .btn.danger{font-weight:600;display:inline-flex;align-items:center;gap:4px}
 .btn.sm{padding:4px 9px;font-size:11px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .toolbar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
@@ -1281,11 +1282,13 @@ function bahanFirebaseDelete(kode){
   });
 }
 function resepFirebaseSync(item){
-  if (typeof window._sgcSaveItem !== 'function') return;
-  window._sgcSaveItem('resep', item, 'sku').then(function(r){
+  if (typeof window._sgcSaveItem !== 'function') return Promise.resolve({ok:false,skipped:true});
+  /* Return promise supaya pemanggil SAVE bisa menunggu konfirmasi Firebase. */
+  return window._sgcSaveItem('resep', item, 'sku').then(function(r){
     if (r && r.ok === false && !r.skipped) {
       console.warn('[SASAGU] Resep tersimpan lokal, tapi GAGAL sync otomatis ke Firebase:', r.error);
     }
+    return r;
   });
 }
 function resepFirebaseDelete(sku){
@@ -1854,55 +1857,138 @@ var PWI_STEP_TYPES=[
   {key:'qc',label:'QC / Pemeriksaan',icon:'ti-checklist'},
   {key:'catatan',label:'Catatan / Peringatan',icon:'ti-alert-triangle'}
 ];
-function pwiDefaultStep(){return {id:'s'+Date.now()+Math.random().toString(36).slice(2,7),type:'proses',title:'',instruction:'',durationMin:0,required:true};}
+/* ─────────────────────────────────────────────────────────────────────
+   PWI EDITOR — SINGLE SOURCE OF TRUTH
+   FIXED6:
+   - Setiap langkah punya ID stabil dan state editor sendiri.
+   - HAPUS benar-benar menghapus ID dari state, bukan hanya DOM.
+   - Re-render tidak boleh menghidupkan kembali langkah yang sudah dihapus.
+   - Tambah langkah dilindungi dari double-click / double-fire event.
+   - Urutan naik/turun bekerja pada state yang sama.
+   ───────────────────────────────────────────────────────────────────── */
+var PWI_EDITOR_STATE={};
+var PWI_LAST_ADD={};
+
+function pwiMakeId(){
+  return 's'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,9);
+}
+function pwiDefaultStep(){return {id:pwiMakeId(),type:'proses',title:'',instruction:'',durationMin:0,required:true};}
 function pwiSteps(data){return Array.isArray(data&&data.steps)?data.steps:[];}
 function pwiTypeLabel(key){var x=PWI_STEP_TYPES.find(function(t){return t.key===key;});return x?x.label:'Proses';}
 function pwiTypeIcon(key){var x=PWI_STEP_TYPES.find(function(t){return t.key===key;});return x?x.icon:'ti-settings';}
+
+function pwiCloneStep(step){
+  step=step||{};
+  return {id:String(step.id||pwiMakeId()),type:step.type||'proses',title:String(step.title||''),instruction:String(step.instruction||''),durationMin:parseInt(step.durationMin,10)||0,required:step.required!==false};
+}
+function pwiNormalizeSteps(steps){
+  var used={};
+  return (Array.isArray(steps)?steps:[]).map(function(step){
+    var x=pwiCloneStep(step);
+    /* Data lama kadang tidak mempunyai ID. Data lama dengan ID yang sama
+       tetap dipisahkan supaya setiap kartu mempunyai identitas sendiri. */
+    if(used[x.id]) x.id=pwiMakeId();
+    used[x.id]=true;
+    return x;
+  });
+}
+function pwiGetState(key){
+  if(!Object.prototype.hasOwnProperty.call(PWI_EDITOR_STATE,key)) PWI_EDITOR_STATE[key]=[];
+  return PWI_EDITOR_STATE[key];
+}
+function pwiSetState(key,steps){PWI_EDITOR_STATE[key]=pwiNormalizeSteps(steps);return PWI_EDITOR_STATE[key];}
+
 function pwiStepEditor(step,i){
-  step=step||pwiDefaultStep();
-  var dur=parseInt(step.durationMin,10)||0;
-  return '<div class="sgc-pwi-step" data-pwi-index="'+i+'" style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;background:#fff">'+
+  step=pwiCloneStep(step); var stepId=step.id; var dur=parseInt(step.durationMin,10)||0;
+  return '<div class="sgc-pwi-step" data-pwi-index="'+i+'" data-pwi-id="'+escHtml(stepId)+'" style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;background:#fff">'+
     '<div style="display:flex;align-items:center;gap:7px;padding:8px 10px;background:var(--surface-1);border-bottom:1px solid var(--border)">'+
-      '<span class="sgc-pwi-num" style="font-size:11px;font-weight:800;min-width:24px;color:var(--brand)">Langkah '+(i+1)+'</span>'+
-      '<select class="sgc-pwi-type" style="font-size:10px;padding:4px 6px" title="Jenis langkah">'+PWI_STEP_TYPES.map(function(t){return '<option value="'+t.key+'" '+(step.type===t.key?'selected':'')+'>'+t.label+'</option>';}).join('')+'</select>'+
-      '<button type="button" class="btn sm" onclick="pwiMoveStep(this,-1)" title="Naik">↑</button>'+
-      '<button type="button" class="btn sm" onclick="pwiMoveStep(this,1)" title="Turun">↓</button>'+
-      '<button type="button" class="del-btn" onclick="pwiRemoveStep(this)" title="Hapus langkah">×</button>'+
-    '</div>'+
+      '<span class="sgc-pwi-num" style="font-size:11px;font-weight:800;min-width:24px;color:var(--brand)">Langkah '+(i+1)+'</span>'+ 
+      '<select class="sgc-pwi-type" style="font-size:10px;padding:4px 6px" title="Jenis langkah">'+PWI_STEP_TYPES.map(function(t){return '<option value="'+t.key+'" '+(step.type===t.key?'selected':'')+'>'+t.label+'</option>';}).join('')+'</select>'+ 
+      '<button type="button" class="btn sm" onclick="pwiMoveStep(this,-1)" title="Naik">↑</button>'+ 
+      '<button type="button" class="btn sm" onclick="pwiMoveStep(this,1)" title="Turun">↓</button>'+ 
+      '<button type="button" class="btn sm danger" onclick="pwiRemoveStep(this)" title="Hapus langkah"><i class="ti ti-x"></i> HAPUS</button>'+ 
+    '</div>'+ 
     '<div style="padding:9px 10px">'+
-      '<div class="field" style="margin-bottom:7px"><label style="font-size:10px">Judul langkah</label><input class="sgc-pwi-title" value="'+escHtml(step.title||'')+'" placeholder="Contoh: Masukkan bahan A ke mixer" style="font-size:11px"></div>'+
-      '<div class="field" style="margin-bottom:7px"><label style="font-size:10px">Instruksi kerja</label><textarea class="sgc-pwi-instruction" style="width:100%;min-height:58px;padding:7px 9px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical" placeholder="Tulis tindakan yang harus dilakukan staff...">'+escHtml(step.instruction||'')+'</textarea></div>'+
+      '<div class="field" style="margin-bottom:7px"><label style="font-size:10px">Judul langkah</label><input class="sgc-pwi-title" value="'+escHtml(step.title)+'" placeholder="Contoh: Masukkan bahan A ke mixer" style="font-size:11px"></div>'+ 
+      '<div class="field" style="margin-bottom:7px"><label style="font-size:10px">Instruksi kerja</label><textarea class="sgc-pwi-instruction" style="width:100%;min-height:58px;padding:7px 9px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical" placeholder="Tulis tindakan yang harus dilakukan staff...">'+escHtml(step.instruction)+'</textarea></div>'+ 
       '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
-        '<label style="display:flex;align-items:center;gap:5px;font-size:10px"><input type="checkbox" class="sgc-pwi-required" '+(step.required!==false?'checked':'')+'> Wajib diselesaikan</label>'+
-        '<label class="sgc-pwi-duration-wrap" style="display:'+(step.type==='timer'?'flex':'none')+';align-items:center;gap:5px;font-size:10px">Durasi <input type="number" class="sgc-pwi-duration" min="1" max="1440" value="'+(dur||'')+'" placeholder="5" style="width:70px;font-size:10px"> menit</label>'+
-      '</div>'+
-    '</div>'+
+        '<label style="display:flex;align-items:center;gap:5px;font-size:10px"><input type="checkbox" class="sgc-pwi-required" '+(step.required?'checked':'')+'> Wajib diselesaikan</label>'+ 
+        '<label class="sgc-pwi-duration-wrap" style="display:'+(step.type==='timer'?'flex':'none')+';align-items:center;gap:5px;font-size:10px">Durasi <input type="number" class="sgc-pwi-duration" min="1" max="1440" value="'+(dur||'')+'" placeholder="5" style="width:70px;font-size:10px"> menit</label>'+ 
+      '</div>'+ 
+    '</div>'+ 
   '</div>';
 }
+
+/* Baca FORM saat ini menjadi state. Ini satu-satunya fungsi yang mengubah
+   state berdasarkan DOM; fungsi hapus/tambah/pindah kemudian bekerja dari
+   state tersebut dan merender ulang. */
 function getPwiStepsFromForm(key){
-  var out=[];document.querySelectorAll('#tahap-block-'+key+' .sgc-pwi-step').forEach(function(el,i){
-    var type=(el.querySelector('.sgc-pwi-type')||{}).value||'proses';
-    var title=(el.querySelector('.sgc-pwi-title')||{}).value||'';
-    var instruction=(el.querySelector('.sgc-pwi-instruction')||{}).value||'';
-    var required=!!(el.querySelector('.sgc-pwi-required')||{}).checked;
-    var duration=parseInt((el.querySelector('.sgc-pwi-duration')||{}).value,10)||0;
-    if(title.trim()||instruction.trim()) out.push({id:el.dataset.pwiId||('s'+(i+1)),type:type,title:title.trim(),instruction:instruction.trim(),durationMin:duration,required:required});
+  var list=document.querySelectorAll('#tahap-block-'+key+' .sgc-pwi-step');
+  var out=[];
+  list.forEach(function(el,i){
+    out.push({
+      id:el.dataset.pwiId||pwiMakeId(),
+      type:(el.querySelector('.sgc-pwi-type')||{}).value||'proses',
+      title:((el.querySelector('.sgc-pwi-title')||{}).value||'').trim(),
+      instruction:((el.querySelector('.sgc-pwi-instruction')||{}).value||'').trim(),
+      durationMin:parseInt((el.querySelector('.sgc-pwi-duration')||{}).value,10)||0,
+      required:!!(el.querySelector('.sgc-pwi-required')||{}).checked
+    });
+    el.dataset.pwiIndex=String(i);
   });
-  return out;
+  PWI_EDITOR_STATE[key]=pwiNormalizeSteps(out);
+  return PWI_EDITOR_STATE[key];
 }
 function pwiRenderEditor(key,steps){
-  var wrap=document.getElementById('pwi-list-'+key);if(!wrap)return;
-  wrap.innerHTML=(steps&&steps.length?steps.map(pwiStepEditor).join(''):'<div class="sgc-pwi-empty" style="padding:8px 0;color:var(--text-muted);font-size:10px">Belum ada langkah. Tambahkan langkah kerja agar staff dipandu satu per satu.</div>')+
-    '<button type="button" class="btn sm" onclick="pwiAddStep(\''+key+'\')"><i class="ti ti-plus"></i>Tambah Langkah</button>';
+  var wrap=document.getElementById('pwi-list-'+key); if(!wrap)return;
+  var normalized=pwiSetState(key,steps);
+  wrap.innerHTML=normalized.length?normalized.map(pwiStepEditor).join(''):'<div class="sgc-pwi-empty" style="padding:8px 0;color:var(--text-muted);font-size:10px">Belum ada langkah. Tambahkan langkah kerja agar staff dipandu satu per satu.</div>';
+  pwiBindEditor(wrap);
 }
 function pwiAddStep(key){
-  var steps=getPwiStepsFromForm(key);steps.push(pwiDefaultStep());pwiRenderEditor(key,steps);
+  var now=Date.now(); if(PWI_LAST_ADD[key]&&now-PWI_LAST_ADD[key]<400)return; PWI_LAST_ADD[key]=now;
+  /* FIXED7: sebelumnya fungsi ini mengambil dari PWI_EDITOR_STATE (state lama/basi),
+     bukan dari isi form yang sedang tampil. Akibatnya teks yang baru saja diketik di
+     langkah-langkah lain hilang/ter-reset ke kosong setiap kali menambah langkah baru,
+     sehingga terlihat seperti "langkah kosong dobel" yang terus bertambah.
+     Sekarang selalu sinkron dari DOM dulu (sama seperti hapus & pindah urutan). */
+  var steps=getPwiStepsFromForm(key).slice(); steps.push(pwiDefaultStep()); PWI_EDITOR_STATE[key]=steps; pwiRenderEditor(key,steps);
 }
-function pwiRemoveStep(btn){var key=btn.closest('.tahap-block').id.replace('tahap-block-','');var steps=getPwiStepsFromForm(key);var i=parseInt(btn.closest('.sgc-pwi-step').dataset.pwiIndex||'0',10);steps.splice(i,1);pwiRenderEditor(key,steps);}
-function pwiMoveStep(btn,dir){var key=btn.closest('.tahap-block').id.replace('tahap-block-','');var steps=getPwiStepsFromForm(key);var i=parseInt(btn.closest('.sgc-pwi-step').dataset.pwiIndex||'0',10),j=i+dir;if(j<0||j>=steps.length)return;var x=steps[i];steps[i]=steps[j];steps[j]=x;pwiRenderEditor(key,steps);}
-function pwiBindEditor(){
-  document.querySelectorAll('.sgc-pwi-type').forEach(function(sel){sel.addEventListener('change',function(){var wrap=sel.closest('.sgc-pwi-step').querySelector('.sgc-pwi-duration-wrap');if(wrap)wrap.style.display=sel.value==='timer'?'flex':'none';});});
+function pwiRemoveStep(btn){
+  var card=btn&&btn.closest?btn.closest('.sgc-pwi-step'):null; if(!card)return;
+  var block=card.closest('.tahap-block'); if(!block)return;
+  var key=block.id.replace('tahap-block-',''); var id=card.dataset.pwiId; if(!id)return;
+  /* Ambil nilai input terakhir SEBELUM kartu dihapus, lalu hapus tepat ID
+     tersebut dari state. Tidak ada daftar "deleted" yang dapat menghidupkan
+     kembali kartu; state setelah operasi adalah sumber kebenaran. */
+  var steps=getPwiStepsFromForm(key).slice();
+  var before=steps.length;
+  steps=steps.filter(function(s){return String(s.id)!==String(id);});
+  if(steps.length===before)return;
+  PWI_EDITOR_STATE[key]=steps;
+  pwiRenderEditor(key,steps);
 }
+function pwiMoveStep(btn,dir){
+  var card=btn&&btn.closest?btn.closest('.sgc-pwi-step'):null; var block=btn&&btn.closest?btn.closest('.tahap-block'):null; if(!card||!block)return;
+  var key=block.id.replace('tahap-block-',''); var id=card.dataset.pwiId; var steps=getPwiStepsFromForm(key).slice();
+  var i=steps.findIndex(function(s){return String(s.id)===String(id);}); if(i<0)return; var j=i+dir; if(j<0||j>=steps.length)return;
+  var x=steps[i];steps[i]=steps[j];steps[j]=x; PWI_EDITOR_STATE[key]=steps; pwiRenderEditor(key,steps);
+}
+function pwiBindEditor(root){
+  (root||document).querySelectorAll('.sgc-pwi-type').forEach(function(sel){
+    if(sel.dataset.pwiBound==='1')return; sel.dataset.pwiBound='1';
+    sel.addEventListener('change',function(){var wrap=sel.closest('.sgc-pwi-step').querySelector('.sgc-pwi-duration-wrap');if(wrap)wrap.style.display=sel.value==='timer'?'flex':'none';});
+  });
+}
+
+function initPwiEditors(tut){
+  TAHAP_DEFS.forEach(function(t){
+    var data=tut&&tut[t.key]?tut[t.key]:{};
+    pwiSetState(t.key,pwiSteps(data));
+    pwiRenderEditor(t.key,PWI_EDITOR_STATE[t.key]);
+  });
+}
+
 function buildPremixEditor(tut){
   var p=tut&&tut.premix?tut.premix:{};
   var groups=Array.isArray(p.groups)?p.groups:[];
@@ -2027,22 +2113,15 @@ function buildTahapForm(tut){
             '<div style="font-size:11px;font-weight:600;color:var(--brand-dark);margin-bottom:5px">Langkah Kerja Staff</div>'+
             '<div style="font-size:10px;color:var(--text-muted);line-height:1.5;margin-bottom:8px">Susun pekerjaan menjadi kartu langkah. Staff akan melihat satu langkah pada satu waktu dan wajib menyelesaikan langkah sebelum lanjut.</div>'+
             '<div id="pwi-list-'+t.key+'"></div>'+
+            '<button type="button" class="btn sm" onclick="pwiAddStep(\''+t.key+'\')"><i class="ti ti-plus"></i>Tambah Langkah</button>'+
             '<div style="margin-top:10px"><label style="font-size:10px;color:var(--text-muted)">Instruksi umum / catatan SOP lama (opsional)</label><textarea id="tahap-isi-'+t.key+'" style="width:100%;min-height:58px;margin-top:4px;padding:7px 9px;border:.5px solid var(--border-strong);border-radius:6px;font-size:11px;font-family:inherit;resize:vertical" placeholder="Catatan umum yang berlaku untuk tahap ini...">'+(data.instruksi||'')+'</textarea></div>'+
           '</div>')+
         expExtra+
-        ''
+        ''+
       '</div>'+
     '</div>';
   });
   return html;
-}
-
-function initPwiEditors(tut){
-  TAHAP_DEFS.forEach(function(t){
-    var data=tut&&tut[t.key]?tut[t.key]:{};
-    pwiRenderEditor(t.key,pwiSteps(data));
-  });
-  pwiBindEditor();
 }
 
 function toggleTahapCheck(key){
@@ -2257,11 +2336,19 @@ function saveResep(){
   var nama=document.getElementById('mr-nama').value.trim();
   var sku=document.getElementById('mr-sku').value.trim().toUpperCase();
   var idx=parseInt(document.getElementById('mr-idx').value);
+  /* Gunakan SATU array resep sebagai sumber kebenaran. Sebelumnya setelah
+     load Firebase, window.resepData menunjuk ke array cloud tetapi variabel
+     resepData lokal masih menunjuk ke array lama. saveResep() lalu mengubah
+     array lama, sementara resepSave()/render memakai array cloud — akibatnya
+     Kode Premix dan perubahan resep lain tampak hilang setelah disimpan. */
+  var resepArr = window.resepData || resepData;
+  window.resepData = resepArr;
+  resepData = resepArr;
   if(idx<0 && !sku) sku=genKodeResep();
   if(!nama||!sku){alert('Nama produk dan SKU wajib diisi');return;}
   document.getElementById('mr-sku').value=sku;
   /* SKU tidak boleh menunjuk ke resep lain. Ini guard kedua selain readonly. */
-  var duplicate=(window.resepData||resepData||[]).some(function(r,i){return i!==idx && String(r.sku||'').toUpperCase()===sku;});
+  var duplicate=resepArr.some(function(r,i){return i!==idx && String(r.sku||'').toUpperCase()===sku;});
   if(duplicate){alert('SKU '+sku+' sudah dipakai resep lain. Form dibatalkan agar resep lama tidak tertimpa.');return;}
   var bahan=getIngsFromForm();
   if(!bahan.length){alert('Tambahkan minimal 1 bahan');return;}
@@ -2274,13 +2361,30 @@ function saveResep(){
     catatan:document.getElementById('mr-catatan').value.trim(),bahan:bahan,tutorial:tut,
     expiredDough:expDough,
     premixShelfLifeDays:parseInt(document.getElementById('mr-premix-shelf-life').value,10)||0};
-  if(idx>=0){resepData[idx]=obj;}else{resepData.push(obj);}
+  if(idx>=0){resepArr[idx]=obj;}else{resepArr.push(obj);}
+  window.resepData = resepArr; resepData = resepArr;
+  /* SIMPAN LOKAL TERLEBIH DAHULU, lalu TUNGGU Firebase selesai.
+     Jangan menutup form sebelum cloud mengonfirmasi write sukses.
+     Sebelumnya resepFirebaseSync() fire-and-forget, sehingga user bisa
+     langsung refresh/buka kembali sementara Firebase masih menyimpan versi lama. */
   resepSave();
-  resepFirebaseSync(obj);
-  closeModal('modal-resep');clearResepForm();renderResep();renderDash();
+  var saveCloudPromise = resepFirebaseSync(obj);
+  if (saveCloudPromise && typeof saveCloudPromise.then === 'function') {
+    saveCloudPromise.then(function(r){
+      if (r && r.ok === false && !r.skipped) {
+        alert('Perubahan resep tersimpan di perangkat, tetapi GAGAL disimpan ke Firebase. Jangan refresh dulu.\n\nDetail: '+(r.error||'Tidak diketahui'));
+        return;
+      }
+      closeModal('modal-resep');clearResepForm();renderResep();renderDash();
+      showToast('Resep dan Langkah Kerja Staff berhasil disimpan','success');
+    });
+  } else {
+    closeModal('modal-resep');clearResepForm();renderResep();renderDash();
+  }
 }
 
 function clearResepForm(){
+  PWI_EDITOR_STATE={}; PWI_DELETED_IDS={}; PWI_LAST_ADD={};
   document.getElementById('mr-nama').value='';document.getElementById('mr-sku').value='';
   document.getElementById('mr-yield').value='';document.getElementById('mr-catatan').value='';
   var ps=document.getElementById('mr-premix-shelf-life');if(ps)ps.value='';
@@ -2290,8 +2394,10 @@ function clearResepForm(){
 }
 
 function editResep(idx){
+  PWI_EDITOR_STATE={}; PWI_DELETED_IDS={}; PWI_LAST_ADD={};
   if(currentRole!=='owner'){alert('Hanya owner yang dapat mengedit resep.');return;}
-  var r=resepData[idx];
+  var r=(window.resepData||resepData)[idx];
+  if(!r){alert('Resep tidak ditemukan. Muat ulang data resep terlebih dahulu.');return;}
   document.getElementById('mr-idx').value=idx;
   document.getElementById('mr-nama').value=r.nama;document.getElementById('mr-sku').value=r.sku;document.getElementById('mr-sku').readOnly=true;
   document.getElementById('mr-jenis').value=r.jenis;document.getElementById('mr-yield').value=r.yield;
@@ -2309,11 +2415,13 @@ function editResep(idx){
 
 function delResep(idx){
   if(currentRole!=='owner'){alert('Hanya owner yang dapat menghapus resep.');return;}
-  var r=resepData[idx];if(!r)return;
+  var activeResep=window.resepData||resepData;
+  var r=activeResep[idx];if(!r)return;
   var dipakai = rencanaData.some(function(p){return p.resepIdx===idx}) || eksekusiData.some(function(e){return e.resepIdx===idx});
   var pesan='Hapus resep "'+r.nama+'" ('+r.sku+') secara permanen?\nData resep ini (komposisi bahan & tutorial) akan hilang dan tidak dapat dikembalikan.';
 if(dipakai) pesan+='\n⚠ Resep ini terpakai di data Perencanaan/Eksekusi Produksi. Menghapusnya bisa membuat data tersebut menunjuk ke resep yang salah.';  if(!confirm(pesan))return;
-  resepData.splice(idx,1);
+  activeResep.splice(idx,1);
+  window.resepData=activeResep; resepData=activeResep;
   resepSave();
   resepFirebaseDelete(r.sku);
   renderResep();
@@ -3299,6 +3407,48 @@ function printModal(modalId){
 }
 document.querySelectorAll('.overlay').forEach(function(m){m.addEventListener('click',function(e){if(e.target===m)m.classList.remove('open');});});
 
+/* ═══════════════════════════════════════════════════════════════════════
+   LOGIN SAFETY FIX
+   setRole() asli berada di <script type="module">. Jika modul Firebase
+   gagal dimuat (mis. saat HTML dibuka langsung dari file://, CDN gagal,
+   atau ada error di modul), fungsi itu tidak pernah terpasang ke window.
+   Akibatnya login berhenti dengan pesan "Fungsi setRole tidak tersedia".
+   Sediakan fallback global agar LOGIN TIDAK bergantung pada Firebase.
+   Jika modul Firebase berhasil, window.setRole asli akan menggantikan ini.
+   ═══════════════════════════════════════════════════════════════════════ */
+if(typeof window.setRole !== 'function'){
+  window.setRole = function(r){
+    window.currentRole = r;
+    var isOwner = r === 'owner';
+    var labels = {owner:'Owner', kepala:'Kepala Produksi', staff:'Staff Produksi'};
+    var colors = {
+      owner:{bg:'#E8EAF6',fg:'#283593'},
+      kepala:{bg:'#E3F2FD',fg:'#1565C0'},
+      staff:{bg:'#E8F5E9',fg:'#1B5E20'}
+    };
+    var roleText=document.getElementById('role-text');
+    var roleLabel=document.getElementById('role-label');
+    var roleDisplay=document.getElementById('role-display');
+    if(roleText) roleText.textContent=labels[r]||r;
+    if(roleLabel) roleLabel.textContent=labels[r]||r;
+    if(roleDisplay && colors[r]){
+      roleDisplay.style.background=colors[r].bg;
+      roleDisplay.style.color=colors[r].fg;
+    }
+    var btnBahan=document.getElementById('btn-add-bahan');
+    var btnResep=document.getElementById('btn-add-resep');
+    var btnRencana=document.getElementById('btn-add-rencana');
+    var navResep=document.getElementById('nav-resep');
+    if(btnBahan) btnBahan.style.display=isOwner?'':'none';
+    if(btnResep) btnResep.style.display=isOwner?'':'none';
+    if(navResep) navResep.style.display=isOwner?'':'none';
+    if(btnRencana) btnRencana.style.display=(r==='staff')?'none':'';
+    if(typeof closeModal==='function') closeModal('modal-role');
+    if(typeof renderResep==='function') renderResep();
+    if(typeof renderRencana==='function') renderRencana();
+  };
+}
+
 /* ───────────── INIT ───────────── */
 document.getElementById('bl-tgl').value=today();
 genKode();
@@ -3361,6 +3511,30 @@ var SGC_ROLE_LABELS = {
 };
 
 var _sgcCurrentAccount = null;
+
+/* FIXED5: login owns a safe global setRole implementation.
+   Script utama dapat gagal parse karena fitur lain; login tetap harus bekerja. */
+window.setRole = window.setRole || function(r){
+  var labels={owner:'Owner',kepala:'Kepala Produksi',staff:'Staff Produksi'};
+  var colors={owner:{bg:'#E8EAF6',fg:'#283593'},kepala:{bg:'#E3F2FD',fg:'#1565C0'},staff:{bg:'#E8F5E9',fg:'#1B5E20'}};
+  window.currentRole=r;
+  if(typeof currentRole !== 'undefined') currentRole=r;
+  var roleText=document.getElementById('role-text');
+  var roleLabel=document.getElementById('role-label');
+  var roleDisplay=document.getElementById('role-display');
+  if(roleText) roleText.textContent=labels[r]||r;
+  if(roleLabel) roleLabel.textContent=labels[r]||r;
+  if(roleDisplay && colors[r]){ roleDisplay.style.background=colors[r].bg; roleDisplay.style.color=colors[r].fg; }
+  var btnBahan=document.getElementById('btn-add-bahan');
+  var btnResep=document.getElementById('btn-add-resep');
+  var btnRencana=document.getElementById('btn-add-rencana');
+  var navResep=document.getElementById('nav-resep');
+  var isOwner=r==='owner';
+  if(btnBahan) btnBahan.style.display=isOwner?'':'none';
+  if(btnResep) btnResep.style.display=isOwner?'':'none';
+  if(navResep) navResep.style.display=isOwner?'':'none';
+  if(btnRencana) btnRencana.style.display=r==='staff'?'none':'';
+};
 
 function doLogin(){
   var uname = (document.getElementById('login-username').value||'').trim().toLowerCase();
@@ -7285,7 +7459,29 @@ window.loadFromFirebase = async function() {
       loadCol('stok_dough_t2'), loadCol('batch_t3'), loadCol('pengiriman_t6'), loadCol('t6_counter'), loadCol('t6_audit'), loadCol('produk_sasagu'), loadCol('t6_batch_meta')
     ]);
     if (bahan.length)     { window.bahanData = bahan; bahanSave(); }
-    if (resep.length)     { window.resepData = resep; resepSave(); }
+    /* Firebase menjadi sumber kebenaran untuk resep yang sudah berhasil dimuat.
+       Jika koleksi cloud kosong, JANGAN hapus data lokal — ini mencegah browser
+       offline/akun Firebase baru menimpa resep lokal dengan array kosong. */
+    if (Array.isArray(resep) && resep.length) {
+      /* Firebase yang berhasil dimuat menjadi sumber resep aktif. Sebelumnya
+         kode justru melakukan normalisasi ke window.resepData LAMA lalu
+         menetapkan resepData dari array lama, sehingga hasil edit cloud tidak
+         pernah benar-benar masuk ke state aplikasi. */
+      resep.forEach(function(r){
+        if(!r || !r.tutorial) return;
+        TAHAP_DEFS.forEach(function(t){
+          if(!r.tutorial[t.key]) return;
+          var st=pwiNormalizeSteps(pwiSteps(r.tutorial[t.key]));
+          r.tutorial[t.key].steps=st;
+        });
+      });
+      window.resepData = resep;
+      resepData = window.resepData;
+      resepSave();
+    } else if (!Array.isArray(window.resepData)) {
+      window.resepData = resepData || [];
+      resepData = window.resepData;
+    }
     /* PERBAIKAN: pembelian/rencana/eksekusi dulu MENIMPA TOTAL data lokal
        kalau cloud punya isi (window.xxxData = dataDariCloud). Sekarang
        ketiganya sudah auto-sync per item ke Firestore (fire-and-forget,
