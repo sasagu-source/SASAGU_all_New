@@ -10647,8 +10647,8 @@ function mrAktifkanPencarianBahan(selectBahan){
     if (typeof window.addIng !== 'function'){ setTimeout(coba, 200); return; }
     if (window.addIng._sgcSearchPatched) return;
     var _origAddIng = window.addIng;
-    var _patched = function(kode, jumlah, sat){
-      var ret = _origAddIng(kode, jumlah, sat);
+    var _patched = function(kode, jumlah, sat, premixCode){
+      var ret = _origAddIng(kode, jumlah, sat, premixCode);
       var rows = document.querySelectorAll('#mr-ing-list .ing-row');
       var lastRow = rows[rows.length - 1];
       if (lastRow) {
