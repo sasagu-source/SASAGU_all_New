@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>POS SASAGU V1.8 — Sistem Penjualan Sasagu</title>
+<title>POS SASAGU (Baru) — Sistem Penjualan Sasagu</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
 
 <!-- ===== FIREBASE SDK ===== -->
@@ -832,6 +832,7 @@ tr:hover td{background:#fafaf8}
           <option value="nama">Nama (A-Z)</option>
         </select>
         <button class="btn sm amber" onclick="bukaImportProduk()" title="Import produk massal dari file CSV">📥 Import Massal</button>
+        <button class="btn sm success" onclick="exportProdukCSV()" title="Export semua produk ke file CSV">📤 Export Produk</button>
       </div>
     </div>
     <div class="tbl-wrap">
@@ -1522,7 +1523,7 @@ const TIPE_DISKON_DEFAULT = { umum:0, reseller:5, agen:10, distributor:15, konsi
 ===================================================================== */
 const DEFAULT_SETTINGS = {
   brand:{
-    nama:'SASAGU',
+    nama:'POS SASAGU',
     tagline:'Sistem Penjualan Sasagu',
     alamat:'',
     telp:'0811-480-4300',
@@ -1553,7 +1554,7 @@ function getSettings(){
   return DB.settings;
 }
 
-// Render "Nama Usaha" jadi 2 warna seperti style asli "SASAGU" (kata pertama
+// Render "Nama Usaha" jadi 2 warna seperti style asli "POS SASAGU" (kata pertama
 // normal, sisanya diberi warna aksen) — dipakai di header faktur, surat jalan & lap. shift
 function brandHtmlBig(nama, color){
   nama = nama||'POS USAHA';
@@ -4648,6 +4649,49 @@ function tutupImportProduk(){
   resetImportCSV();
 }
 
+// Export semua produk ke CSV — tidak terpengaruh pencarian atau urutan tabel
+function exportProdukCSV(){
+  if(typeof DB === 'undefined' || !Array.isArray(DB.produk)){
+    if(typeof toast==='function') toast('Database produk belum siap.');
+    return;
+  }
+  const escapeCSV = (value) => {
+    const s = value == null ? '' : String(value);
+    return /[,"\n\r]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  const supplierNama = (supplierId) => {
+    const s = Array.isArray(DB.suppliers) ? DB.suppliers.find(x=>x.id===supplierId) : null;
+    return s ? (s.nama||'') : '';
+  };
+  const header = 'nama_produk*,sku,supplier,satuan,harga_eceran*,harga_reseller,harga_grosir,harga_modal,stok_awal,berat_aktual_gram,panjang_cm,lebar_cm,tinggi_cm';
+  const rows = DB.produk.map(p=>[
+    p.nama||'',
+    p.sku||'',
+    supplierNama(p.supplierId),
+    p.satuan||'pcs',
+    p.harga||0,
+    p.hargaReseller||0,
+    p.hargaGrosir||0,
+    p.modal||0,
+    p.stok||0,
+    p.beratAktual||0,
+    p.dimP||0,
+    p.dimL||0,
+    p.dimT||0
+  ].map(escapeCSV).join(','));
+  const csv = '\uFEFF' + header + (rows.length ? '\n' + rows.join('\n') : '');
+  const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'export_produk.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  if(typeof toast==='function') toast('✅ '+DB.produk.length+' produk berhasil diexport.');
+}
+
 // Download template CSV
 function downloadTemplateImportProduk(){
   const header = 'nama_produk*,sku,supplier,satuan,harga_eceran*,harga_reseller,harga_grosir,harga_modal,stok_awal,berat_aktual_gram,panjang_cm,lebar_cm,tinggi_cm';
@@ -4722,6 +4766,7 @@ function previewImportCSV(input){
       tinggi:  header.findIndex(h=>h.includes('tinggi')),
     };
 
+    // Baca SEMUA baris data dari file — tidak ada batas jumlah produk yang diimport.
     const dataRows = rows.slice(1);
     const parsed = dataRows.map((cols, i)=>{
       const get = (colIdx) => colIdx>=0 && cols[colIdx] ? cols[colIdx].trim() : '';
