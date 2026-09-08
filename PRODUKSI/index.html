@@ -3404,54 +3404,7 @@ function printModal(modalId){
     '</style></head><body>'+
     html+
     '<script>window.onload=function(){setTimeout(function(){window.print();},200);window.onafterprint=function(){window.close();};};<\/script>'+
-    '<\/body>
-
-<!-- ADDON — EXPORT CSV MASTER: hanya menambah tombol/fungsi export. -->
-<script>
-(function(){
-  'use strict';
-  window.SgcMasterCsvExport = window.SgcMasterCsvExport || {};
-  function csvCell(value){
-    var v=value===undefined||value===null?'':String(value);
-    return /[",\r\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v;
-  }
-  function makeCsv(headers,rows){
-    return headers.map(csvCell).join(',')+'\r\n'+rows.map(function(row){return row.map(csvCell).join(',');}).join('\r\n')+(rows.length?'\r\n':'');
-  }
-  function downloadCsv(filename,csv){
-    var blob=new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');
-    a.href=url;a.download=filename;document.body.appendChild(a);a.click();document.body.removeChild(a);
-    setTimeout(function(){URL.revokeObjectURL(url);},1000);
-  }
-  function stamp(){var d=new Date(),z=function(n){return String(n).padStart(2,'0');};return d.getFullYear()+z(d.getMonth()+1)+z(d.getDate());}
-
-  window.SgcMasterCsvExport.bahan=function(){
-    var data=window.bahanData||[];
-    var headers=['kode','bentuk','nama_bahan','satuan_hpp','harga_hpp','harga_beli_terakhir','kemasan','status'];
-    var rows=data.map(function(b){return [b.kode||'',b.bentuk||'',b.nama||'',b.sat||'',b.harga!=null?b.harga:'',b.hargaBeliTerakhir!=null?b.hargaBeliTerakhir:'',b.kemasan||'',''];});
-    downloadCsv('backup_bahan_baku_'+stamp()+'.csv',makeCsv(headers,rows));
-    if(typeof window.showToast==='function')window.showToast('Bahan Baku berhasil diexport ke CSV','success');
-  };
-
-  window.SgcMasterCsvExport.resep=function(){
-    var data=window.resepData||[];
-    var headers=['sku_resep','nama_resep','sku_bahan','jumlah','satuan'],rows=[];
-    data.forEach(function(r){(Array.isArray(r.bahan)?r.bahan:[]).forEach(function(item){rows.push([r.sku||'',r.nama||'',item.kode||'',item.jumlah!=null?item.jumlah:'',item.sat||'']);});});
-    downloadCsv('backup_resep_master_'+stamp()+'.csv',makeCsv(headers,rows));
-    if(typeof window.showToast==='function')window.showToast('Resep Master berhasil diexport ke CSV','success');
-  };
-
-  window.SgcMasterCsvExport.produk=function(){
-    var data=(window.SgcSkuSasagu&&window.SgcSkuSasagu.data)||[];
-    var headers=['nama_produk*','sku','supplier','satuan','harga_eceran*','harga_reseller','harga_grosir','harga_modal','stok_awal','berat_aktual_gram','panjang_cm','lebar_cm','tinggi_cm'];
-    var rows=data.map(function(p){return [p.nama||'',p.sku||'',p.supplier||'',p.satuan||'',p.hargaEceran!=null?p.hargaEceran:'',p.hargaReseller!=null?p.hargaReseller:'',p.hargaGrosir!=null?p.hargaGrosir:'',p.hargaModal!=null?p.hargaModal:'',p.stokAwal!=null?p.stokAwal:'',p.berat!=null?p.berat:'',p.panjang!=null?p.panjang:'',p.lebar!=null?p.lebar:'',p.tinggi!=null?p.tinggi:''];});
-    downloadCsv('backup_barcode_produk_jadi_sasagu_'+stamp()+'.csv',makeCsv(headers,rows));
-    if(typeof window.showToast==='function')window.showToast('Barcode Produk Jadi Sasagu berhasil diexport ke CSV','success');
-  };
-})();
-</script>
-
-</html>'
+    '</html>'
   );
   win.document.close();
 }
@@ -3694,6 +3647,51 @@ function doLogin(){
   };
 })();
 </script>
+<!-- ADDON — EXPORT CSV MASTER: hanya menambah tombol/fungsi export. -->
+<script>
+(function(){
+  'use strict';
+  window.SgcMasterCsvExport = window.SgcMasterCsvExport || {};
+  function csvCell(value){
+    var v=value===undefined||value===null?'':String(value);
+    return /[",\r\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v;
+  }
+  function makeCsv(headers,rows){
+    return headers.map(csvCell).join(',')+'\r\n'+rows.map(function(row){return row.map(csvCell).join(',');}).join('\r\n')+(rows.length?'\r\n':'');
+  }
+  function downloadCsv(filename,csv){
+    var blob=new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download=filename;document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(url);},1000);
+  }
+  function stamp(){var d=new Date(),z=function(n){return String(n).padStart(2,'0');};return d.getFullYear()+z(d.getMonth()+1)+z(d.getDate());}
+
+  window.SgcMasterCsvExport.bahan=function(){
+    var data=window.bahanData||[];
+    var headers=['kode','bentuk','nama_bahan','satuan_hpp','harga_hpp','harga_beli_terakhir','kemasan','status'];
+    var rows=data.map(function(b){return [b.kode||'',b.bentuk||'',b.nama||'',b.sat||'',b.harga!=null?b.harga:'',b.hargaBeliTerakhir!=null?b.hargaBeliTerakhir:'',b.kemasan||'',''];});
+    downloadCsv('backup_bahan_baku_'+stamp()+'.csv',makeCsv(headers,rows));
+    if(typeof window.showToast==='function')window.showToast('Bahan Baku berhasil diexport ke CSV','success');
+  };
+
+  window.SgcMasterCsvExport.resep=function(){
+    var data=window.resepData||[];
+    var headers=['sku_resep','nama_resep','sku_bahan','jumlah','satuan'],rows=[];
+    data.forEach(function(r){(Array.isArray(r.bahan)?r.bahan:[]).forEach(function(item){rows.push([r.sku||'',r.nama||'',item.kode||'',item.jumlah!=null?item.jumlah:'',item.sat||'']);});});
+    downloadCsv('backup_resep_master_'+stamp()+'.csv',makeCsv(headers,rows));
+    if(typeof window.showToast==='function')window.showToast('Resep Master berhasil diexport ke CSV','success');
+  };
+
+  window.SgcMasterCsvExport.produk=function(){
+    var data=(window.SgcSkuSasagu&&window.SgcSkuSasagu.data)||[];
+    var headers=['nama_produk*','sku','supplier','satuan','harga_eceran*','harga_reseller','harga_grosir','harga_modal','stok_awal','berat_aktual_gram','panjang_cm','lebar_cm','tinggi_cm'];
+    var rows=data.map(function(p){return [p.nama||'',p.sku||'',p.supplier||'',p.satuan||'',p.hargaEceran!=null?p.hargaEceran:'',p.hargaReseller!=null?p.hargaReseller:'',p.hargaGrosir!=null?p.hargaGrosir:'',p.hargaModal!=null?p.hargaModal:'',p.stokAwal!=null?p.stokAwal:'',p.berat!=null?p.berat:'',p.panjang!=null?p.panjang:'',p.lebar!=null?p.lebar:'',p.tinggi!=null?p.tinggi:''];});
+    downloadCsv('backup_barcode_produk_jadi_sasagu_'+stamp()+'.csv',makeCsv(headers,rows));
+    if(typeof window.showToast==='function')window.showToast('Barcode Produk Jadi Sasagu berhasil diexport ke CSV','success');
+  };
+})();
+</script>
+
 
 <!-- ═══════════════════════════════════════════════════════════════
      SASAGU ADDON TAHAP 1 — TAMBAHAN KODE (tidak mengubah kode asli)
