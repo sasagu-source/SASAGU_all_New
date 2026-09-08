@@ -819,8 +819,7 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
 <div class="page" id="page-bahan">
   <div class="toolbar">
     <button class="btn primary" id="btn-add-bahan" onclick="clearBahanForm();genKode();openModal('modal-bahan')"><i class="ti ti-plus" aria-hidden="true"></i>Tambah bahan</button>
-    <button class="btn" onclick="exportBahanCSV()"><i class="ti ti-upload"></i>Export CSV</button>
-     <input class="search" placeholder="Cari kode atau nama…" id="bahan-search" oninput="renderBahan()">
+    <input class="search" placeholder="Cari kode atau nama…" id="bahan-search" oninput="renderBahan()">
   </div>
 
   <div class="table-wrap">
@@ -868,8 +867,7 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
 <div class="page" id="page-resep">
   <div class="toolbar">
     <button class="btn primary" id="btn-add-resep" onclick="openResepPicker()"><i class="ti ti-plus" aria-hidden="true"></i>Tambah resep</button>
-    <button class="btn" onclick="exportResepCSV()"><i class="ti ti-upload"></i>Export CSV</button>
-     <input class="search" placeholder="Cari nama produk…" id="resep-search" oninput="renderResep()">
+    <input class="search" placeholder="Cari nama produk…" id="resep-search" oninput="renderResep()">
     <div class="pill-row" style="margin:0">
       <button class="pill active" onclick="fResep('all',this)">Semua</button>
       <button class="pill" onclick="fResep('cookies',this)">Cookies</button>
@@ -7779,14 +7777,6 @@ function renderPreviewTable(containerId, headers, rows, maxRows = 20) {
 // (tanpa mengubah logika renderPreviewTable itu sendiri).
 window.renderPreviewTable = renderPreviewTable;
 
-// CSV BACKUP / EXPORT MASTER DATA — seluruh data, tanpa batas 100 baris.
-function sgcCsvCell(value){if(value===null||value===undefined)return '';var str=typeof value==='object'?JSON.stringify(value):String(value);return /[",\r\n]/.test(str)?'"'+str.replace(/"/g,'""')+'"':str;}
-function sgcMakeCSV(headers,rows){return '\ufeff'+headers.map(sgcCsvCell).join(',')+'\r\n'+rows.map(function(row){return headers.map(function(h){return sgcCsvCell(row[h]);}).join(',');}).join('\r\n')+'\r\n';}
-function sgcDownloadCSV(filename,headers,rows){var blob=new Blob([sgcMakeCSV(headers,rows)],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);}
-function sgcStamp(){var d=new Date(),p=function(n){return String(n).padStart(2,'0')};return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes());}
-function exportBahanCSV(){var data=window.bahanData||[],headers=['kode','bentuk','nama_bahan','satuan_hpp','harga_hpp','harga_beli_terakhir','kemasan','konversi','stok','keterangan'];var rows=data.map(function(b){return {kode:b.kode||'',bentuk:b.bentuk||'',nama_bahan:b.nama||'',satuan_hpp:b.sat||'',harga_hpp:b.harga||0,harga_beli_terakhir:b.hargaBeliTerakhir||'',kemasan:b.kemasan||'',konversi:b.konversi||0,stok:b.stok||0,keterangan:b.ket||''};});sgcDownloadCSV('SASAGU_Bahan_Baku_Backup_'+sgcStamp()+'.csv',headers,rows);if(typeof showToast==='function')showToast('Export Bahan Baku selesai: '+data.length+' data','success');}
-function exportResepCSV(){var data=window.resepData||[],headers=['sku_resep','nama_resep','jenis','yield','satuan_yield','catatan','data_json'];var rows=data.map(function(r){return {sku_resep:r.sku||'',nama_resep:r.nama||'',jenis:r.jenis||'',yield:r.yield||0,satuan_yield:r.yieldSat||'',catatan:r.catatan||'',data_json:JSON.stringify(r)};});sgcDownloadCSV('SASAGU_Master_Resep_Backup_'+sgcStamp()+'.csv',headers,rows);if(typeof showToast==='function')showToast('Export Master Resep selesai: '+data.length+' resep','success');}
-
 // ═══════════════════════════════════════════════════
 //  IMPORT BAHAN BAKU
 // ═══════════════════════════════════════════════════
@@ -7985,7 +7975,6 @@ document.getElementById('import-resep-file').addEventListener('change', function
             else if (hl.includes('nama') && hl.includes('bahan')) colMap.namaBahan = h;
             else if (hl === 'jumlah') colMap.jumlah = h;
             else if (hl === 'satuan') colMap.satuan = h;
-            else if (hl === 'data_json' || hl === 'datajson') colMap.dataJson = h;
         });
         parsedResepData = { headers, rows, colMap };
         renderPreviewTable('import-resep-preview', headers, rows);
@@ -8033,24 +8022,6 @@ function executeImportResep() {
     const grouped = {};
     const urutanSku = [];
     rows.forEach((row, idx) => {
-        if (colMap.dataJson) {
-            const rawJson = (row[colMap.dataJson] || '').trim();
-            if (rawJson) {
-                try {
-                    const fullRecipe = JSON.parse(rawJson);
-                    const skuFull = String(fullRecipe.sku || row[colMap.skuResep] || '').trim();
-                    if (!skuFull) throw new Error('SKU Resep kosong');
-                    if (!fullRecipe.nama) fullRecipe.nama = (row[colMap.namaResep] || skuFull).trim();
-                    grouped[skuFull] = fullRecipe;
-                    if (urutanSku.indexOf(skuFull) < 0) urutanSku.push(skuFull);
-                    okCount++;
-                    logs.push(`<span class="log-ok">Backup resep ${skuFull} (${fullRecipe.nama || skuFull}) dipulihkan lengkap.</span>`);
-                    return;
-                } catch(e) {
-                    logs.push(`<span class="log-warn">Baris ${idx + 2}: data_json tidak valid, diproses sebagai CSV biasa.</span>`);
-                }
-            }
-        }
         const skuResep = (row[colMap.skuResep] || '').trim();
         const namaResep = (row[colMap.namaResep] || '').trim();
         if (!skuResep) {
@@ -8085,7 +8056,6 @@ function executeImportResep() {
 
     const hasil = urutanSku.map(skuResep => {
         const data = grouped[skuResep];
-        if (data && data.sku && data.tutorial) return data;
         okCount++;
         logs.push(`<span class="log-ok">Resep ${skuResep} (${data.nama || skuResep}) dimasukkan dengan ${data.bahan.length} bahan.</span>`);
         return {
@@ -8605,8 +8575,7 @@ function ssInjectPage(){
     '<div class="page" id="page-sku-produk-sasagu">'+
       '<div class="alert-box ok"><i class="ti ti-info-circle"></i><div>Import produk lewat file CSV sesuai format template (kolom: <code>nama_produk*, sku, supplier, satuan, harga_eceran*, harga_reseller, harga_grosir, harga_modal, stok_awal, berat_aktual_gram, panjang_cm, lebar_cm, tinggi_cm</code>). Kolom bertanda <strong>*</strong> wajib diisi. Data di halaman ini murni hasil import CSV manual \u2014 tidak ada sinkronisasi otomatis ke aplikasi lain.</div></div>'+
       '<div class="toolbar">'+
-        '<button class="btn" onclick="SgcSkuSasagu.unduhTemplate()"><i class="ti ti-download"></i>Unduh Template CSV</button>
-         <button class="btn" onclick="SgcSkuSasagu.exportCSV()"><i class="ti ti-download"></i>Export Backup CSV</button>'+
+        '<button class="btn" onclick="SgcSkuSasagu.unduhTemplate()"><i class="ti ti-download"></i>Unduh Template CSV</button>'+
         '<input class="search" id="ss-search" placeholder="Cari Barcode atau nama produk\u2026" oninput="SgcSkuSasagu.renderTable()">'+
       '</div>'+
 
@@ -8858,23 +8827,6 @@ window.SgcSkuSasagu.executeImport = function(){
   document.getElementById('btn-import-produk-sasagu').disabled = true;
   document.getElementById('btn-cancel-produk-sasagu').disabled = true;
   ssSafeToast('Import produk selesai: data lama diganti total dengan ' + okCount + ' data baru', 'success');
-};
-
-window.SgcSkuSasagu.exportCSV = function(){
-  var data = window.SgcSkuSasagu.data || [];
-  var headers = TEMPLATE_HEADERS;
-  var rows = data.map(function(p){
-    return {
-      nama_produk: p.nama || '', sku: p.sku || '', supplier: p.supplier || '', satuan: p.satuan || 'pcs',
-      harga_eceran: p.hargaEceran || 0, harga_reseller: p.hargaReseller || 0, harga_grosir: p.hargaGrosir || 0,
-      harga_modal: p.hargaModal || 0, stok_awal: p.stokAwal || 0, berat_aktual_gram: p.berat || 0,
-      panjang_cm: p.panjang || 0, lebar_cm: p.lebar || 0, tinggi_cm: p.tinggi || 0
-    };
-  });
-  if (typeof sgcDownloadCSV === 'function') {
-    sgcDownloadCSV('SASAGU_Produk_Jadi_Backup_' + sgcStamp() + '.csv', headers, rows);
-  }
-  ssSafeToast('Export Produk Jadi selesai: ' + data.length + ' data', 'success');
 };
 
 window.SgcSkuSasagu.cancelImport = function(){
