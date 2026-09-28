@@ -3327,7 +3327,11 @@ function simpanEksekusi(){
      rencana (noDok) yang sama. Simpan Nomor Induk yang sudah dipakai agar
      pembukaan ulang panel di hari berikutnya tetap memakai identitas batch
      yang sama. */
-  var nomorIndukSimpan = getNomorIndukAktif();
+  var nomorIndukSimpan = '';
+  try{
+    var niAktif = (window.SgcAddon && typeof window.SgcAddon.getNomorIndukAktif==='function') ? window.SgcAddon.getNomorIndukAktif() : null;
+    nomorIndukSimpan = (niAktif && niAktif.nomor) ? niAktif.nomor : '';
+  }catch(eNi){ nomorIndukSimpan = ''; }
   var eks={noDok:p.noDok,nomorInduk:nomorIndukSimpan||'',tglProduksi:tglProduksi,tglExpired:tglExpired,pelaksana:pelaksana,catatan:catatan,resepIdx:p.resepIdx};
   var eksIdxLama=eksekusiData.findIndex(function(e){return e && e.noDok===p.noDok;});
   if(eksIdxLama>=0){
@@ -5714,7 +5718,7 @@ window.SgcT4.updateExpiredPenyimpananPreview=function(){
   var days=window.sgcGetMasaSimpanPenyimpanan(item,jenis);
   var titik=window.sgcGetTitikMulaiExpired(item);
   var exp=window.sgcCalcExpiredPenyimpanan(item,jenis,titik.iso);
-  el.value=exp?tsLabel(exp):'';
+  el.value=exp?t4TsLabel(exp):'';
   if(hint) hint.textContent=days ? 'Otomatis '+days+' hari sejak '+(titik.label||'titik produksi')+'.' : 'Masa simpan '+(T4_JENIS_LABEL[jenis]||jenis||'ini')+' belum diatur di Master Resep.';
 };
 
