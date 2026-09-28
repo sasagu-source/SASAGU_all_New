@@ -234,7 +234,15 @@ code{font-family:var(--font-mono,monospace);font-size:11px;background:var(--surf
 .exec-summary .doc-row{display:flex;justify-content:space-between;padding:3px 0;font-size:12px;border-bottom:.5px dotted var(--border)}
 .exec-summary .doc-row:last-child{border-bottom:none}
 
-/* PRINT: ditangani oleh printModal() — membuka window baru yang bersih */
+/* PRINT: Tahap 4 memakai preview di modal yang sama + window.print()
+   pada halaman aktif. Tidak membuka tab/window baru dan tidak auto-print. */
+@keyframes sgcSpin{to{transform:rotate(360deg)}}
+#sgc-print-area{display:none}
+@media print{
+  body.sgc-printing > *{display:none !important}
+  body.sgc-printing #sgc-print-area{display:block !important}
+  body.sgc-printing #sgc-print-area .label-preview{display:block !important}
+}
 
 /* ========== IMPORT CSV ========== */
 .import-section {
@@ -3315,8 +3323,20 @@ function simpanEksekusi(){
   var tutCheck=r.tutorial||{};var pg=tutCheck.premix&&Array.isArray(tutCheck.premix.groups)?tutCheck.premix.groups:[];if(pg.length){var progKey=p.noDok+'_premix_progress';var prog={};try{prog=JSON.parse(localStorage.getItem(progKey)||'{}')||{};}catch(e){}var allDone=pg.every(function(g){return g.code&&prog[g.code];});if(!allDone){alert('Selesaikan semua Kode Premix terlebih dahulu.');return;}}
   if(!tglExpired){alert('Tanggal expired produk wajib diisi');return;}
   if(!pelaksana){alert('Nama pelaksana produksi wajib diisi');return;}
-  var eks={noDok:p.noDok,tglProduksi:tglProduksi,tglExpired:tglExpired,pelaksana:pelaksana,catatan:catatan,resepIdx:p.resepIdx};
-  eksekusiData.push(eks);
+  /* FIX DUPLIKASI: jangan pernah membuat record eksekusi kedua untuk
+     rencana (noDok) yang sama. Simpan Nomor Induk yang sudah dipakai agar
+     pembukaan ulang panel di hari berikutnya tetap memakai identitas batch
+     yang sama. */
+  var nomorIndukSimpan = getNomorIndukAktif();
+  var eks={noDok:p.noDok,nomorInduk:nomorIndukSimpan||'',tglProduksi:tglProduksi,tglExpired:tglExpired,pelaksana:pelaksana,catatan:catatan,resepIdx:p.resepIdx};
+  var eksIdxLama=eksekusiData.findIndex(function(e){return e && e.noDok===p.noDok;});
+  if(eksIdxLama>=0){
+    var eksLamaData=eksekusiData[eksIdxLama]||{};
+    eks=Object.assign({},eksLamaData,eks);
+    eksekusiData[eksIdxLama]=eks;
+  }else{
+    eksekusiData.push(eks);
+  }
   eksekusiSave();
   eksekusiFirebaseSync(eks);
   p.status='selesai';
@@ -3331,6 +3351,16 @@ function simpanEksekusi(){
 }
 
 function showLabelDoc(noDok){
+  /* Jika modal label sebelumnya dipakai Tahap 4, kembalikan tombol cetak
+     umum untuk label Tahap 1 agar tombol khusus Tahap 4 tidak terbawa. */
+  var t4BtnOld=document.getElementById('sgc-t4-print-btn');
+  if(t4BtnOld) t4BtnOld.remove();
+  var labelFootOld=document.querySelector('#modal-label .mfoot');
+  if(labelFootOld){
+    labelFootOld.querySelectorAll('button').forEach(function(b){
+      if((b.getAttribute('onclick')||'').indexOf("printModal('modal-label')")>=0) b.style.display='';
+    });
+  }
   var p=rencanaData.find(function(r){return r.noDok===noDok;});if(!p)return;
   var r=resepData[p.resepIdx];if(!r)return;
   var eks=eksekusiData.find(function(e){return e.noDok===noDok;});if(!eks)return;
@@ -3892,9 +3922,10 @@ function doLogin(){
     return todayKey+'.'+kode+'-'+String(counter).padStart(3,'0');
   }
 
-  function saveNomorInduk(nomor){
+  function saveNomorInduk(nomor, noDok){
     localStorage.setItem(LS_NI, JSON.stringify({
       nomor: nomor,
+      noDok: noDok || null,
       timestamp: new Date().toISOString(),
       status: 'aktif'
     }));
@@ -3947,8 +3978,33 @@ function doLogin(){
           if(typeof rencanaData !== 'undefined' && rencanaData[ri]) skuHint = rencanaData[ri].sku||'';
         }
       }catch(ex){}
-      var nomor = generateNomorInduk(skuHint);
-      saveNomorInduk(nomor);
+      /* FIX DUPLIKASI: satu rencana produksi (noDok) hanya boleh memiliki
+         satu Nomor Induk. Prioritaskan Nomor Induk yang sudah tersimpan
+         untuk rencana ini, lalu fallback ke state aktif. Untuk data lama
+         yang belum menyimpan nomor, baru generate sekali. */
+      var noDokAktif = '';
+      try{
+        var ridxEl2 = document.getElementById('me-ridx');
+        var ri2 = ridxEl2 ? parseInt(ridxEl2.value,10) : -1;
+        var p2 = (typeof rencanaData !== 'undefined' && ri2>=0) ? rencanaData[ri2] : null;
+        noDokAktif = p2 && p2.noDok ? p2.noDok : '';
+      }catch(ex2){}
+      var nomor = '';
+      try{
+        var eksLama = (typeof eksekusiData !== 'undefined' ? eksekusiData : []).find(function(e){
+          return e && e.noDok===noDokAktif && e.nomorInduk;
+        });
+        if(eksLama) nomor = eksLama.nomorInduk;
+      }catch(ex3){}
+      if(!nomor){
+        try{
+          var aktifObj = localStorage.getItem(LS_NI);
+          aktifObj = aktifObj ? JSON.parse(aktifObj) : null;
+          if(aktifObj && aktifObj.noDok===noDokAktif && aktifObj.nomor) nomor=aktifObj.nomor;
+        }catch(ex4){}
+      }
+      if(!nomor) nomor = generateNomorInduk(skuHint);
+      saveNomorInduk(nomor, noDokAktif);
       displayNomorIndukBadge(nomor);
       /* Biarkan event lanjut ke onclick inline simpanEksekusi() */
     }, false);
@@ -5682,9 +5738,19 @@ window.SgcT4.submitSimpan = function(){
   it.expiredMulaiLabel=titikExpired.label;
   it.expiredPenyimpanan=window.sgcCalcExpiredPenyimpanan(it,jenis,titikExpired.iso);
   t4Save();
-  closeModal('modal-t4-simpan');
-  window.SgcT4.refresh();
-  window.SgcT4.cetakLabel(id);
+  var btnSubmit=document.querySelector('#modal-t4-simpan .mfoot button.btn.primary');
+  if(btnSubmit){
+    btnSubmit.disabled=true;
+    btnSubmit.innerHTML='<i class="ti ti-loader-2" style="animation:sgcSpin .8s linear infinite"></i>Menyimpan…';
+  }
+  /* Simpan selesai terlebih dahulu. Setelah itu tampilkan preview label di
+     modal yang sama — TIDAK membuka tab baru dan TIDAK memanggil print otomatis. */
+  setTimeout(function(){
+    if(btnSubmit){btnSubmit.disabled=false;btnSubmit.innerHTML='<i class="ti ti-printer"></i>Simpan &amp; Cetak Label';}
+    closeModal('modal-t4-simpan');
+    window.SgcT4.refresh();
+    window.SgcT4.cetakLabel(id);
+  },120);
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -5704,28 +5770,55 @@ window.SgcT4.cetakLabel = function(id){
     '<div class="doc-row"><span>Letak Rak</span><span>'+it.rakLokasi+'</span></div>'+
     '<div class="doc-row"><span>Disimpan Oleh</span><span>'+it.namaPenyimpan+'</span></div>'+
     '<div class="doc-row"><span>Waktu Disimpan</span><span>'+t4TsLabel(it.waktuSimpan)+'</span></div>'+
-    '<div class="doc-row"><span>Mulai Hitung Expired</span><span>'+(it.expiredMulaiDari?t4TsLabel(it.expiredMulaiDari):'—')+'<br><small>'+(it.expiredMulaiLabel||'')+'</small></span></div>'+    '<div class="doc-row"><span>Expired Penyimpanan</span><span>'+(it.expiredPenyimpanan?t4TsLabel(it.expiredPenyimpanan):'Belum diatur')+'</span></div>'+
+    '<div class="doc-row"><span>Mulai Hitung Expired</span><span>'+(it.expiredMulaiDari?t4TsLabel(it.expiredMulaiDari):'—')+'<br><small>'+(it.expiredMulaiLabel||'')+'</small></span></div>'+
+    '<div class="doc-row"><span>Expired Penyimpanan</span><span>'+(it.expiredPenyimpanan?t4TsLabel(it.expiredPenyimpanan):'Belum diatur')+'</span></div>'+
   '</div>';
 
-  var win=window.open('','_blank','width=480,height=640');
-  if(!win){ alert('Popup diblokir browser. Izinkan popup untuk halaman ini lalu coba lagi.'); return; }
-  win.document.write(
-    '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Label Penyimpanan</title>'+
-    '<style>'+
-      'body{font-family:system-ui,sans-serif;background:#fff;color:#1C1C1A;font-size:13px;margin:20px}'+
-      '.label-preview{background:#fff;border:1px solid #ccc;border-radius:8px;padding:16px;font-family:monospace;font-size:11px;max-width:380px;margin:0 auto}'+
-      '.doc-title{font-size:13px;font-weight:700;text-align:center;letter-spacing:1px}'+
-      '.doc-sub{font-size:9px;color:#666;text-align:center;margin-top:2px;margin-bottom:8px}'+
-      '.barcode-area{margin:10px 0;padding:8px;border:1px dashed #ccc;text-align:center;border-radius:4px}'+
-      '.barcode-area svg{display:block;margin:0 auto 4px}'+
-      '.doc-row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dotted #eee;font-size:10px}'+
-      '.doc-row:last-child{border:none}'+
-      '@media print{body{margin:0;padding:10px}@page{margin:.8cm}}'+
-    '</style></head><body>'+html+
-    '<script>window.onload=function(){setTimeout(function(){window.print();},200);window.onafterprint=function(){window.close();};};<\/script>'+
-    '<\/body></html>'
-  );
-  win.document.close();
+  var content=document.getElementById('label-content');
+  if(!content) return;
+  content.innerHTML=html;
+  /* Pastikan tombol khusus Tahap 4 tersedia: cetak dilakukan setelah staf
+     melihat preview, bukan otomatis. */
+  var foot=document.querySelector('#modal-label .mfoot');
+  if(foot){
+    /* Sembunyikan tombol PC lama yang memakai window.open() khusus selama
+       preview Tahap 4 aktif. Tombol Thermal tetap tersedia sebagai opsi lain. */
+    foot.querySelectorAll('button').forEach(function(b0){
+      if((b0.getAttribute('onclick')||'').indexOf("printModal('modal-label')")>=0) b0.style.display='none';
+    });
+    var oldBtn=document.getElementById('sgc-t4-print-btn');
+    if(oldBtn) oldBtn.remove();
+    var b=document.createElement('button');
+    b.id='sgc-t4-print-btn'; b.className='btn primary';
+    b.innerHTML='<i class="ti ti-printer"></i>Cetak Label';
+    b.onclick=function(){window.SgcT4.printPreview();};
+    foot.appendChild(b);
+  }
+  openModal('modal-label');
+};
+
+/* Cetak Tahap 4 langsung dari halaman yang sama. Tidak memakai window.open(),
+   tidak membuat tab baru, dan tidak menjalankan print otomatis saat preview dibuka. */
+window.SgcT4.printPreview = function(){
+  var content=document.getElementById('label-content');
+  if(!content) return;
+  var area=document.getElementById('sgc-print-area');
+  if(!area){
+    area=document.createElement('div'); area.id='sgc-print-area';
+    document.body.appendChild(area);
+  }
+  area.innerHTML=content.innerHTML;
+  document.body.classList.add('sgc-printing');
+  var cleanup=function(){
+    document.body.classList.remove('sgc-printing');
+    if(area) area.innerHTML='';
+    window.removeEventListener('afterprint',cleanup);
+  };
+  window.addEventListener('afterprint',cleanup);
+  setTimeout(function(){
+    try{window.print();}
+    catch(e){cleanup();alert('Dialog cetak tidak dapat dibuka: '+e.message);}
+  },80);
 };
 
 /* ══════════════════════════════════════════════════════════════════
