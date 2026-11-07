@@ -1415,6 +1415,20 @@ function calcHPPResep(bahan,qty){
   return total;
 }
 
+function sgcGetResepRencana(plan){
+  if(!plan) return null;
+  var live=(window.resepData||resepData)[plan.resepIdx]||{};
+  var snap=plan.resepSnapshot||live;
+  /* Komposisi resep dan yield berasal dari snapshot saat rencana dibuat.
+     Tutorial per tahap dan pengaturan pendukung selalu membaca Master Resep terbaru. */
+  var merged=Object.assign({},live,snap);
+  merged.tutorial=live.tutorial||snap.tutorial||{};
+  ['premixShelfLifeDays','expiredDough','simpan','kemas'].forEach(function(k){
+    if(live[k]!==undefined) merged[k]=live[k];
+  });
+  return merged;
+}
+
 function genDocNo(sku,date){
   var d=date||today();
   var parts=d.split('-');
@@ -2635,7 +2649,8 @@ function cetakPP(){
   var noDok=genDocNo(r.sku,tglRencana);
   var hpp=calcHPPResep(r.bahan,qty);
   var rencana={noDok:noDok,sku:r.sku,produk:r.nama,jenis:r.jenis,batch:qty,tglRencana:tglRencana,
-    kepala:kepala,alasan:alasan,batasWaktu:batasWaktu,hpp:hpp,resepIdx:ridx,status:'menunggu'};
+    dibuatPada:new Date().toISOString(), kepala:kepala,alasan:alasan,batasWaktu:batasWaktu,hpp:hpp,resepIdx:ridx,
+    resepSnapshot:JSON.parse(JSON.stringify(r)),status:'menunggu'};
   rencanaData.push(rencana);
   rencanaSave();
   rencanaFirebaseSync(rencana);
@@ -2673,7 +2688,11 @@ function renderRencana(){
   });
   var html='';
   if(!rows.length){html='<tr><td colspan="8"><div class="empty-state"><i class="ti ti-file-off"></i>Belum ada rencana produksi</div></td></tr>';}
-  rows.slice().reverse().forEach(function(p){
+  rows.slice().sort(function(a,b){
+    var ta=Date.parse(a.dibuatPada||a.tglRencana||0)||0;
+    var tb=Date.parse(b.dibuatPada||b.tglRencana||0)||0;
+    return tb-ta;
+  }).forEach(function(p){
     var idx=rencanaData.indexOf(p);
     var st=rencanaStatusInfo(p);
     html+='<tr>'+
@@ -2698,7 +2717,7 @@ function renderRencana(){
 
 function cetakUlangRencana(idx){
   var p=rencanaData[idx];if(!p)return;
-  var r=resepData[p.resepIdx];if(!r)return;
+  var r=sgcGetResepRencana(p);if(!r)return;
   showDocPreview(p,r,p.batch);
 }
 
@@ -3168,7 +3187,7 @@ function bukaDariAntrian(noDok){
 
 function loadEksekusiForm(ridx){
   var p=rencanaData[ridx];if(!p)return;
-  var r=resepData[p.resepIdx];if(!r)return;
+  var r=sgcGetResepRencana(p);if(!r)return;
   var st=rencanaStatusInfo(p);
   var html='<div class="card"><div class="card-head"><span style="font-weight:500;font-size:12px">Detail rencana — '+p.noDok+'</span><span class="badge '+st.cls+'">'+st.label+'</span></div><div class="card-body">';
   html+='<div class="exec-summary">'+
@@ -3302,7 +3321,7 @@ function selesaiPremixKode(progressKey,code){
 }
 function initPremixProgressUI(){var box=document.getElementById('sgc-premix-stepper');if(!box)return;var key=box.getAttribute('data-progress-key');var progress={};try{progress=JSON.parse(localStorage.getItem(key)||'{}')||{};}catch(e){};var cards=document.querySelectorAll('[data-premix-card]');var codes=[];cards.forEach(function(c){codes.push(c.getAttribute('data-premix-card'));});var doneCount=codes.filter(function(c){return !!progress[c];}).length;cards.forEach(function(card,i){var c=card.getAttribute('data-premix-card');card.style.display=(progress[c]||i===doneCount)?'block':'none';if(progress[c])card.classList.add('sgc-premix-done');});var txt=document.getElementById('sgc-premix-progress-text');if(txt)txt.textContent='Progress Premix: '+doneCount+' / '+codes.length+' kode selesai';var bar=document.getElementById('sgc-premix-progress-bar');if(bar)bar.style.width=(codes.length?(doneCount/codes.length*100):0)+'%';if(doneCount>=codes.length){document.querySelectorAll('#sgc-premix-stepper button').forEach(function(b){b.style.display='none';});var d=document.createElement('div');d.id='sgc-premix-all-done';d.className='alert-box ok';d.style.marginTop='10px';d.innerHTML='<i class="ti ti-circle-check"></i><div><strong>Semua kode Premix selesai.</strong> Lanjutkan ke c. Eksekusi Produksi.</div>';box.appendChild(d);}}
 
-function updatePremixExpiredPreview(){var ridxEl=document.getElementById('me-ridx');var dateEl=document.getElementById('me-tgl-produksi');var expEl=document.getElementById('me-expired');if(!ridxEl||!dateEl||!expEl)return;var p=rencanaData[parseInt(ridxEl.value,10)];var r=p?resepData[p.resepIdx]:null;var days=r?parseInt(r.premixShelfLifeDays,10)||0:0;if(!dateEl.value||days<=0){expEl.value='';return;}var d=new Date(dateEl.value);if(isNaN(d.getTime()))return;d.setDate(d.getDate()+days);expEl.value=d.toISOString().slice(0,10);}
+function updatePremixExpiredPreview(){var ridxEl=document.getElementById('me-ridx');var dateEl=document.getElementById('me-tgl-produksi');var expEl=document.getElementById('me-expired');if(!ridxEl||!dateEl||!expEl)return;var p=rencanaData[parseInt(ridxEl.value,10)];var r=p?sgcGetResepRencana(p):null;var days=r?parseInt(r.premixShelfLifeDays,10)||0:0;if(!dateEl.value||days<=0){expEl.value='';return;}var d=new Date(dateEl.value);if(isNaN(d.getTime()))return;d.setDate(d.getDate()+days);expEl.value=d.toISOString().slice(0,10);}
 
 function fmtDateTime(dt){
   if(!dt)return'-';
@@ -3315,13 +3334,13 @@ function simpanEksekusi(){
   var p=rencanaData[ridx];if(!p)return;
   var tglProduksi=document.getElementById('me-tgl-produksi').value;
   var tglExpired=document.getElementById('me-expired').value;
-  var r=resepData[p.resepIdx]||{};
+  var r=sgcGetResepRencana(p)||{};
   if(!tglExpired && r.premixShelfLifeDays>0 && tglProduksi){var d=new Date(tglProduksi);d.setDate(d.getDate()+parseInt(r.premixShelfLifeDays,10));tglExpired=d.toISOString().slice(0,10);var ex=document.getElementById('me-expired');if(ex)ex.value=tglExpired;}
   var pelaksana=document.getElementById('me-pelaksana').value.trim();
   var catatan=document.getElementById('me-catatan').value.trim();
   if(!tglProduksi){alert('Tanggal & waktu produksi wajib diisi');return;}
   var tutCheck=r.tutorial||{};var pg=tutCheck.premix&&Array.isArray(tutCheck.premix.groups)?tutCheck.premix.groups:[];if(pg.length){var progKey=p.noDok+'_premix_progress';var prog={};try{prog=JSON.parse(localStorage.getItem(progKey)||'{}')||{};}catch(e){}var allDone=pg.every(function(g){return g.code&&prog[g.code];});if(!allDone){alert('Selesaikan semua Kode Premix terlebih dahulu.');return;}}
-  if(!tglExpired){alert('Tanggal expired produk wajib diisi');return;}
+  /* Expired Premix adalah pengaturan pendukung; kosong tidak boleh menghentikan produksi. */
   if(!pelaksana){alert('Nama pelaksana produksi wajib diisi');return;}
   /* FIX DUPLIKASI: jangan pernah membuat record eksekusi kedua untuk
      rencana (noDok) yang sama. Simpan Nomor Induk yang sudah dipakai agar
@@ -4260,7 +4279,7 @@ function getResepAktif(){
   /* rencanaData & resepData adalah global dari skrip asli */
   var plan=window.rencanaData&&window.rencanaData[ri];
   if(!plan)return null;
-  var r=window.resepData&&window.resepData[plan.resepIdx];
+  var r=sgcGetResepRencana(plan);
   return r||null;
 }
 
@@ -4607,7 +4626,8 @@ SgcT2.cariNomorInduk = function(){
   /* FIX: eksekusiData lama tidak menyimpan resep secara langsung — ambil dari resepData
      terkini lewat resepIdx, supaya perubahan aktif/nonaktif Tahap di Resep Master selalu terbaca. */
   if(eks && !eks.resep){
-    var resepLive = (typeof eks.resepIdx==='number' && window.resepData) ? window.resepData[eks.resepIdx] : null;
+    var planEks=(window.rencanaData||[]).find(function(r){return r.noDok===eks.noDok;});
+    var resepLive=planEks?sgcGetResepRencana(planEks):((typeof eks.resepIdx==='number' && window.resepData)?window.resepData[eks.resepIdx]:null);
     if(!resepLive){
       /* Fallback lama: cocokkan lewat rencanaData jika eksekusiData tidak punya resepIdx */
       var rDtFix = window.rencanaData || [];
@@ -4637,7 +4657,7 @@ SgcT2.cariNomorInduk = function(){
     var rSelesai = rDt.find(function(r){return r.noDok===niInput && r.status==='selesai';});
     if(rSelesai){
       var rIdx = rDt.indexOf(rSelesai);
-      var resepDari = window.resepData && window.resepData[rSelesai.resepIdx];
+      var resepDari = sgcGetResepRencana(rSelesai);
       eks = {nomorInduk: niInput, resep: resepDari, produk: rSelesai.produk, sku: rSelesai.sku, noDok: rSelesai.noDok};
     }
   }
@@ -4842,10 +4862,12 @@ SgcT2.simpanDough = function(){
     var wkt=document.getElementById('t2-waktu-'+i);
     var lok=document.getElementById('t2-lokasi-'+i);
     var exp=document.getElementById('t2-exp-'+i);
-    if(!exp||!exp.value){err='Label '+lid.value+': Batas kadaluarsa wajib diisi.';break;}
+    var planRef=(window.rencanaData||[]).find(function(x){return x.noDok===ni;});
+    var recipeRef=planRef?sgcGetResepRencana(planRef):S.currentResep;
     saved.push({
       labelId: lid.value,
       nomorInduk: ni,
+      namaProduk: (recipeRef&&recipeRef.nama)||(planRef&&planRef.produk)||'',
       waktuBuat: wkt?wkt.value:nowLocal(),
       lokasiSimp: lok?lok.value:'—',
       expiredDough: exp?exp.value:'',
@@ -4905,10 +4927,13 @@ SgcT2.refreshDoughDashboard = function(){
          langsung memproses (SgcT2.prosesLabelDough()), sama seperti kalau
          di-scan barcode fisik. Berguna untuk staf yang tidak punya scanner. */
       antri.slice().reverse().forEach(function(item){
+        var planDough=(window.rencanaData||[]).find(function(x){return x.noDok===item.nomorInduk;});
+        var namaDough=item.namaProduk||(planDough&&planDough.produk)||'Produk belum tercatat';
         htmlA+=
           '<div class="sgc-dough-row" style="cursor:pointer" onclick="SgcQuickPick.pilihLabelDough(&quot;'+item.labelId+'&quot;)" title="Klik untuk pakai label ini di Tahap 3, tanpa perlu ketik manual">'+
             '<div>'+
               '<div class="sgc-dr-lbl">'+item.labelId+'</div>'+
+              '<div style="font-size:11px;font-weight:600;margin:2px 0">'+namaDough+'</div>'+
               '<div style="font-size:10px;color:var(--text-muted)">'+
                 'Dibuat: '+tsLabel(item.waktuBuat)+' | Lokasi: '+item.lokasiSimp+'<br>'+
                 'Exp Dough: '+tsLabel(item.expiredDough)+
@@ -4927,10 +4952,13 @@ SgcT2.refreshDoughDashboard = function(){
     } else {
       var htmlH='';
       histori.slice().reverse().forEach(function(item){
+        var planDoughHist=(window.rencanaData||[]).find(function(x){return x.noDok===item.nomorInduk;});
+        var namaDoughHist=item.namaProduk||(planDoughHist&&planDoughHist.produk)||'Produk belum tercatat';
         htmlH+=
           '<div class="sgc-dough-row">'+
             '<div>'+
               '<div class="sgc-dr-lbl">'+item.labelId+'</div>'+
+              '<div style="font-size:11px;font-weight:600;margin:2px 0">'+namaDoughHist+'</div>'+
               '<div style="font-size:10px;color:var(--text-muted)">'+
                 'Dibuat: '+tsLabel(item.waktuBuat)+' | Lokasi: '+item.lokasiSimp+'<br>'+
                 'Exp Dough: '+tsLabel(item.expiredDough)+
@@ -5097,8 +5125,11 @@ SgcT2.submitPanggang = function(){
   if(!labelAktif){alert('Scan label dough terlebih dahulu.');return;}
 
   /* Buat record batch */
+  var planBatch=(window.rencanaData||[]).find(function(x){return x.noDok===niAktif;});
+  var resepBatch=planBatch?sgcGetResepRencana(planBatch):null;
   var batch={
     batchKode: batchKode,
+    namaProduk:(resepBatch&&resepBatch.nama)||(planBatch&&planBatch.produk)||'',
     labelDough: labelAktif,
     nomorInduk: niAktif,
     waktuOven: waktuOven,
@@ -5165,6 +5196,8 @@ SgcT2.refreshOvenDashboard = function(){
 SgcT2._renderOvenRows = function(list){
   var html='';
   list.slice().reverse().forEach(function(b){
+    var planOven=(window.rencanaData||[]).find(function(x){return x.noDok===b.nomorInduk;});
+    var namaOven=b.namaProduk||(planOven&&planOven.produk)||'Produk belum tercatat';
     var rightCol='';
     if(b.selesai){
       rightCol=
@@ -5191,6 +5224,7 @@ SgcT2._renderOvenRows = function(list){
       '<div class="sgc-oven-row" style="align-items:flex-start">'+
         '<div style="flex:1;min-width:0">'+
           '<div class="sgc-or-lbl">Batch <code>'+b.batchKode+'</code></div>'+
+          '<div style="font-size:11px;font-weight:600;margin:2px 0">'+namaOven+'</div>'+
           '<div style="font-size:10px;color:var(--text-muted)">'+
             'Dari label: <code>'+b.labelDough+'</code> · NI: <code>'+b.nomorInduk+'</code><br>'+
             'Masuk oven: '+tsLabel(b.waktuOven)+' · Operator: '+b.operatorOven+
@@ -5356,11 +5390,15 @@ function t4TsLabel(iso){
 
 /* Ambil info produk dari nomor induk (noDok) — hanya membaca data asli, tidak mengubahnya */
 function t4GetProdukInfo(nomorInduk){
-  var rencana=(window.rencanaData||[]).find(function(r){return r.noDok===nomorInduk;});
+  var rencana=(window.rencanaData||[]).find(function(r){return String(r.noDok||'').trim()===String(nomorInduk||'').trim();});
   if(rencana){
-    var resep=window.resepData&&window.resepData[rencana.resepIdx];
-    return { namaProduk: rencana.produk||(resep?resep.nama:'—'), sku: resep?resep.sku:'—' };
+    var idx=Number(rencana.resepIdx);
+    var resep=(Number.isInteger(idx)?(window.resepData||[])[idx]:null)||sgcGetResepRencana(rencana);
+    if(!resep && rencana.resepSnapshot) resep=window.sgcGetResepBySku(rencana.resepSnapshot.sku);
+    return { namaProduk: rencana.produk||(resep?resep.nama:'—'), sku: resep&&resep.sku?resep.sku:(rencana.resepSnapshot&&rencana.resepSnapshot.sku)||'—' };
   }
+  var eks=(window.eksekusiData||[]).find(function(e){return String(e.noDok||'').trim()===String(nomorInduk||'').trim();});
+  if(eks){var re=window.sgcGetResepBySku(eks.sku);return {namaProduk:eks.produk||(re?re.nama:'—'),sku:eks.sku||(re&&re.sku)||'—'};}
   return { namaProduk:'—', sku:'—' };
 }
 
@@ -5380,7 +5418,7 @@ function t4PushBatchIfNew(batch){
     id: batch.batchKode+'-'+Date.now(),
     batchKode: batch.batchKode,
     nomorInduk: batch.nomorInduk,
-    namaProduk: info.namaProduk,
+    namaProduk: batch.namaProduk||info.namaProduk,
     sku: info.sku,
     jumlahSiapKemas: batch.yieldBersih,
     satuan: 'gr',
@@ -5549,22 +5587,28 @@ window.SgcT4.refresh = function(){
   var empty=document.getElementById('t4-empty');
   var table=document.getElementById('t4-stok-table');
   if(!tbody) return;
-  if(!S4.stokSimpan.length){
+  /* Batch disable disembunyikan dari daftar kerja Tahap 4, tetapi tetap
+     berada di stokSimpan agar tetap tersedia dan diproses di Tahap 5. */
+  var activeRows=S4.stokSimpan.filter(function(it){return !it.disabled && !(it.status==='tersimpan' && !!it.expiredPenyimpanan);});
+  var completedRows=S4.stokSimpan.filter(function(it){return !it.disabled && it.status==='tersimpan' && !!it.expiredPenyimpanan;});
+  if(!activeRows.length){
     tbody.innerHTML='';
     if(table) table.style.display='none';
     if(empty) empty.style.display='block';
-    return;
+  } else {
+    if(table) table.style.display='';
+    if(empty) empty.style.display='none';
   }
-  if(table) table.style.display='';
-  if(empty) empty.style.display='none';
   var html='';
-  S4.stokSimpan.slice().reverse().forEach(function(it){
-    var statusBadge = it.status==='tersimpan'
-      ? '<span class="badge b-green">Tersimpan</span>'
-      : '<span class="badge b-gray">Menunggu disimpan</span>';
-    var aksiBtn = it.status==='tersimpan'
+  activeRows.slice().reverse().forEach(function(it){
+    var t4Complete = it.status==='tersimpan' && !!it.expiredPenyimpanan;
+    var statusBadge = t4Complete
+      ? '<span class="badge b-green">Selesai Disimpan</span>'
+      : '<span class="badge b-gray">Perlu dilengkapi</span>';
+    var aksiBtn = t4Complete
       ? '<button class="btn sm" onclick="SgcT4.bukaModalSimpan(\''+it.id+'\')"><i class="ti ti-printer"></i>Cetak Ulang</button>'
-      : '<button class="btn sm success" onclick="SgcT4.bukaModalSimpan(\''+it.id+'\')"><i class="ti ti-box"></i>Simpan &amp; Cetak Label</button>';
+      : '<button class="btn sm success" onclick="SgcT4.bukaModalSimpan(\''+it.id+'\')"><i class="ti ti-box"></i>Simpan / Lengkapi</button>';
+    aksiBtn += ' <button class="btn sm danger" style="margin-left:4px" onclick="SgcT4.disableBatch(\''+it.id+'\')"><i class="ti ti-archive-off"></i>Disable</button>';
     var jenisBadge='<span style="color:var(--text-muted)">—</span>';
     if(it.jenisPenyimpanan==='chiller'){
       jenisBadge='<span class="badge" style="background:#E3F2FD;color:#0D47A1"><i class="ti ti-fridge"></i> Chiller</span>';
@@ -5586,6 +5630,66 @@ window.SgcT4.refresh = function(){
     '</tr>';
   });
   tbody.innerHTML=html;
+  var page=document.getElementById('page-t4');
+  if(page){
+    var hist=document.getElementById('t4-history-card');
+    if(!hist){
+      hist=document.createElement('div');hist.id='t4-history-card';hist.className='card';hist.style.marginTop='10px';
+      hist.innerHTML='<div class="card-head"><span style="font-weight:500;font-size:12px"><i class="ti ti-history"></i> History Selesai — Tahap 4</span></div><div class="card-body"><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"><select id="t4-history-mode" class="search" style="max-width:190px"><option value="recent">10 history terbaru</option><option value="all">Semua history</option></select><input id="t4-history-search" class="search" placeholder="Cari batch / produk / nomor induk…" style="flex:1;min-width:180px"></div><div style="overflow-x:auto"><table style="font-size:11px;width:100%;border-collapse:collapse"><thead><tr><th>Kode Batch</th><th>Produk</th><th>Expired Penyimpanan</th><th>Lokasi</th><th>Disimpan Oleh</th><th>Status</th></tr></thead><tbody id="t4-history-tbody"></tbody></table></div><div id="t4-history-empty" class="empty-state" style="display:none">History tidak ditemukan.</div></div>';
+      var firstCard=page.querySelector('.card');if(firstCard)firstCard.insertAdjacentElement('afterend',hist);else page.appendChild(hist);
+      document.getElementById('t4-history-mode').onchange=renderT4History;
+      document.getElementById('t4-history-search').oninput=renderT4History;
+    }
+    renderT4History();
+  }
+};
+function renderT4History(){
+  var body=document.getElementById('t4-history-tbody');if(!body)return;
+  var mode=document.getElementById('t4-history-mode'),search=document.getElementById('t4-history-search');
+  var q=(search&&search.value||'').toLowerCase().trim();
+  var rows=(S4.stokSimpan||[]).filter(function(it){return it.status==='tersimpan'&&!!it.expiredPenyimpanan;}).slice().reverse();
+  if(q)rows=rows.filter(function(it){return [it.batchKode,it.namaProduk,it.nomorInduk,it.rakLokasi,it.namaPenyimpan].join(' ').toLowerCase().indexOf(q)>=0;});
+  else if(!mode||mode.value!=='all')rows=rows.slice(0,10);
+  body.innerHTML=rows.map(function(it){return '<tr><td><code>'+it.batchKode+'</code></td><td>'+it.namaProduk+'</td><td>'+t4TsLabel(it.expiredPenyimpanan)+'</td><td>'+(it.rakLokasi||'—')+'</td><td>'+(it.namaPenyimpan||'—')+'</td><td><span class="badge b-green">Selesai</span></td></tr>';}).join('');
+  var empty=document.getElementById('t4-history-empty');if(empty)empty.style.display=rows.length?'none':'block';
+  renderT4DisabledHistory();
+}
+
+/* Riwayat disable. Batch tidak dihapus dari stokSimpan, sehingga Tahap 5
+   tetap dapat membaca stok dan menjalankan alur pengemasan normal. */
+function renderT4DisabledHistory(){
+  var page=document.getElementById('page-t4');if(!page)return;
+  var card=document.getElementById('t4-disabled-history-card');
+  if(!card){
+    card=document.createElement('div');card.id='t4-disabled-history-card';card.className='card';card.style.marginTop='10px';
+    card.innerHTML='<div class="card-head"><span style="font-weight:500;font-size:12px"><i class="ti ti-archive-off"></i> History Disable — Tahap 4</span></div><div class="card-body"><div style="overflow-x:auto"><table style="font-size:11px;width:100%;border-collapse:collapse"><thead><tr><th>Kode Batch</th><th>Produk</th><th>Jumlah</th><th>Waktu Disable</th><th>Alasan Disable</th><th>Status Stok</th></tr></thead><tbody id="t4-disabled-history-tbody"></tbody></table></div><div id="t4-disabled-history-empty" class="empty-state" style="display:none;padding:14px">Belum ada batch yang di-disable.</div></div>';
+    page.appendChild(card);
+  }
+  var body=document.getElementById('t4-disabled-history-tbody');if(!body)return;
+  var rows=(S4.stokSimpan||[]).filter(function(it){return !!it.disabled;}).slice().reverse();
+  body.innerHTML=rows.map(function(it){
+    var qty=Number(it.jumlahSiapKemas)||0;
+    var safeReason=String(it.disableReason||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<tr><td><code>'+it.batchKode+'</code></td><td>'+it.namaProduk+'</td><td style="text-align:right">'+qty.toLocaleString('id-ID')+' '+(it.satuan||'gr')+'</td><td>'+t4TsLabel(it.disabledAt)+'</td><td style="min-width:180px;white-space:normal">'+safeReason+'</td><td><span class="badge b-blue">Tetap tersedia di Tahap 5</span></td></tr>';
+  }).join('');
+  var empty=document.getElementById('t4-disabled-history-empty');if(empty)empty.style.display=rows.length?'none':'block';
+}
+
+window.SgcT4.disableBatch=function(id){
+  var item=(S4.stokSimpan||[]).find(function(it){return String(it.id)===String(id);});
+  if(!item){alert('Data batch tidak ditemukan.');return;}
+  if(item.disabled){alert('Batch ini sudah di-disable.');return;}
+  var reason=prompt('Tuliskan alasan mengapa batch '+(item.batchKode||'')+' di-disable:');
+  if(reason===null)return;
+  reason=String(reason).trim();
+  if(!reason){alert('Alasan disable wajib diisi. Batch belum di-disable.');return;}
+  item.disabled=true;
+  item.disableReason=reason;
+  item.disabledAt=t4NowLocal();
+  item.disabledBy=(document.getElementById('role-text')||{}).textContent||'';
+  t4Save();
+  window.SgcT4.refresh();
+  alert('Batch '+(item.batchKode||'')+' dipindahkan ke History Disable. Stoknya tetap tersedia di Tahap 5 dan mengikuti prosedur pengemasan seperti biasa.');
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -5628,8 +5732,31 @@ var T4_JENIS_LABEL=window.T4_JENIS_LABEL, T4_JENIS_ICON=window.T4_JENIS_ICON;
    punya IIFE/<script> terpisah): cari resep master dari SKU, lalu ambil keterangan/instruksi
    yang berkaitan dengan jenis penyimpanan (Chiller/Freezer/Suhu Ruang). */
 window.sgcGetResepBySku=function(sku){
-  if(!sku||!window.resepData) return null;
-  return window.resepData.find(function(r){return r.sku===sku;})||null;
+  var arr=window.resepData||[];
+  var key=String(sku||'').trim().toUpperCase();
+  if(!key||key==='—'||key==='-') return null;
+  return arr.find(function(r){return String(r.sku||'').trim().toUpperCase()===key;})||null;
+};
+/* Resolver resep untuk batch Tahap 4. SKU tetap menjadi kunci utama; bila SKU
+   batch lama kosong/tidak terbawa, telusuri rencana produksi dan nama produk. */
+window.sgcGetResepByItem=function(item){
+  if(!item) return null;
+  var bySku=window.sgcGetResepBySku(item.sku||item.resepSku||item.skuResep);
+  if(bySku) return bySku;
+  var no=String(item.nomorInduk||'').trim();
+  var plan=(window.rencanaData||[]).find(function(x){return String(x.noDok||'').trim()===no;});
+  if(plan){
+    var idx=Number(plan.resepIdx);
+    var live=Number.isInteger(idx)?(window.resepData||[])[idx]:null;
+    if(live) return live;
+    var snap=plan.resepSnapshot||{};
+    bySku=window.sgcGetResepBySku(snap.sku);
+    if(bySku) return bySku;
+    if(snap.nama){var nm=String(snap.nama).trim().toLowerCase();var m=(window.resepData||[]).filter(function(r){return String(r.nama||'').trim().toLowerCase()===nm;});if(m.length===1)return m[0];}
+  }
+  var name=String(item.namaProduk||'').trim().toLowerCase();
+  if(name){var matches=(window.resepData||[]).filter(function(r){return String(r.nama||'').trim().toLowerCase()===name;});if(matches.length===1)return matches[0];}
+  return null;
 };
 window.sgcGetKeteranganJenisSimpan=function(sku,jenisKey){
   var r=window.sgcGetResepBySku(sku);
@@ -5648,8 +5775,9 @@ function t4GetKeteranganJenis(sku,jenisKey){ return window.sgcGetKeteranganJenis
 
 window.sgcGetMasaSimpanPenyimpanan=function(item,jenis){
   if(!item||!jenis) return 0;
-  var r=window.sgcGetResepBySku(item.sku);
-  var jd=r&&r.tutorial&&r.tutorial.simpan&&r.tutorial.simpan.jenisPenyimpanan ? r.tutorial.simpan.jenisPenyimpanan[jenis] : null;
+  var r=window.sgcGetResepByItem(item);
+  var cfg=r&&r.tutorial&&r.tutorial.simpan&&r.tutorial.simpan.jenisPenyimpanan;
+  var jd=cfg ? (cfg[jenis]||cfg[String(jenis).trim()]) : null;
   return jd ? (parseInt(jd.masaSimpanHari,10)||0) : 0;
 };
 window.sgcGetTitikMulaiExpired=function(item){
@@ -5697,6 +5825,7 @@ window.SgcT4.onJenisChange = function(skipPopup){
   var txt=document.getElementById('t4m-sop-text');
   if(!jenis || jenis==='suhuRuang'){
     if(box) box.style.display='none';
+    window.SgcT4.updateExpiredPenyimpananPreview();
     return;
   }
   var ket=t4GetKeteranganJenis(SgcT4._sopSku,jenis)||'Belum ada keterangan prosedur untuk jenis penyimpanan ini di Resep Master. Hubungi Owner untuk melengkapinya.';
@@ -5715,11 +5844,18 @@ window.SgcT4.updateExpiredPenyimpananPreview=function(){
   var el=document.getElementById('t4m-expired-preview');
   var hint=document.getElementById('t4m-expired-hint');
   if(!el) return;
+  var resep=window.sgcGetResepByItem(item);
   var days=window.sgcGetMasaSimpanPenyimpanan(item,jenis);
   var titik=window.sgcGetTitikMulaiExpired(item);
   var exp=window.sgcCalcExpiredPenyimpanan(item,jenis,titik.iso);
   el.value=exp?t4TsLabel(exp):'';
-  if(hint) hint.textContent=days ? 'Otomatis '+days+' hari sejak '+(titik.label||'titik produksi')+'.' : 'Masa simpan '+(T4_JENIS_LABEL[jenis]||jenis||'ini')+' belum diatur di Master Resep.';
+  if(hint){
+    if(!jenis) hint.textContent='Pilih jenis penyimpanan untuk menghitung tanggal expired.';
+    else if(!resep) hint.textContent='Resep Master tidak ditemukan untuk batch ini (SKU: '+(item.sku||'kosong')+'). Periksa SKU pada rencana produksi.';
+    else if(!days) hint.textContent='Masa simpan '+(T4_JENIS_LABEL[jenis]||jenis)+' pada resep '+(resep.nama||resep.sku)+' belum diisi. Buka Master Resep → Tutorial → Simpan.';
+    else if(!titik.iso) hint.textContent='Masa simpan '+days+' hari sudah terbaca, tetapi tanggal selesai produksi belum tercatat sehingga expired belum bisa dihitung.';
+    else hint.textContent='Otomatis '+days+' hari sejak '+(titik.label||'titik produksi')+'.';
+  }
 };
 
 window.SgcT4.submitSimpan = function(){
@@ -5727,8 +5863,6 @@ window.SgcT4.submitSimpan = function(){
   var jenis=(document.getElementById('t4m-jenis').value||'');
   var rak=(document.getElementById('t4m-rak').value||'').trim();
   var penyimpan=(document.getElementById('t4m-penyimpan').value||'').trim();
-  if(!jenis){alert('Jenis penyimpanan wajib dipilih.');return;}
-  if(!rak){alert('Letak rak wajib diisi.');return;}
   if(!penyimpan){alert('Nama yang menyimpan wajib diisi.');return;}
   var it=S4.stokSimpan.find(function(x){return x.id===id;});
   if(!it) return;
@@ -5740,7 +5874,7 @@ window.SgcT4.submitSimpan = function(){
   var titikExpired=window.sgcGetTitikMulaiExpired(it);
   it.expiredMulaiDari=titikExpired.iso;
   it.expiredMulaiLabel=titikExpired.label;
-  it.expiredPenyimpanan=window.sgcCalcExpiredPenyimpanan(it,jenis,titikExpired.iso);
+  it.expiredPenyimpanan=jenis?window.sgcCalcExpiredPenyimpanan(it,jenis,titikExpired.iso):'';
   t4Save();
   var btnSubmit=document.querySelector('#modal-t4-simpan .mfoot button.btn.primary');
   if(btnSubmit){
@@ -5874,7 +6008,7 @@ if(document.readyState==='loading'){
       <input type="hidden" id="t4m-id">
       <div id="t4m-info" style="background:var(--surface-1);border:.5px solid var(--border);border-radius:7px;padding:9px 12px;margin-bottom:14px;font-size:11px;color:var(--text-secondary)"></div>
       <div class="field">
-        <label>Jenis Penyimpanan <span style="color:red">*</span></label>
+        <label>Jenis Penyimpanan <span style="font-size:10px;color:var(--text-muted)">(dapat dilengkapi kemudian)</span></label>
         <select id="t4m-jenis" onchange="SgcT4.onJenisChange()">
           <option value="">— Pilih jenis penyimpanan —</option>
           <option value="suhuRuang">Suhu Ruang</option>
@@ -5888,7 +6022,7 @@ if(document.readyState==='loading'){
         <div id="t4m-sop-text" style="white-space:pre-line;line-height:1.5"></div>
       </div>
       <div class="field">
-        <label>Letak Rak <span style="color:red">*</span></label>
+        <label>Letak Rak <span style="font-size:10px;color:var(--text-muted)">(opsional)</span></label>
         <input id="t4m-rak" placeholder="Contoh: Rak B2 - Kulkas 1">
       </div>
       <div class="field">
@@ -6323,6 +6457,7 @@ function t5InjectPage(){
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:left;font-size:10px">Produk</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:right;font-size:10px">Jumlah Awal</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:right;font-size:10px">Sudah Dikemas</th>'+
+              '<th style="padding:6px 8px;background:var(--surface-1);text-align:right;font-size:10px">Adjust</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:right;font-size:10px">Sisa Belum Dikemas</th>'+
               '<th style="padding:6px 8px;background:var(--surface-1);text-align:center;font-size:10px">Aksi</th>'+
             '</tr></thead>'+
@@ -6332,6 +6467,7 @@ function t5InjectPage(){
           '<div id="t5-stok-tersedia-empty" class="empty-state" style="padding:16px;display:none"><i class="ti ti-box-off"></i>Belum ada stok dari Tahap 4 yang tersedia untuk dikemas</div>'+
         '</div>'+
       '</div>'+
+      '<div class="card" style="margin-top:10px"><div class="card-head"><span style="font-weight:500;font-size:12px">Batch Habis Dikemas</span></div><div class="card-body" id="t5-stok-habis-body"></div></div>'+
       '<div class="card" style="margin-top:10px">'+
         '<div class="card-head"><span style="font-weight:500;font-size:12px"><i class="ti ti-package-export" style="color:var(--brand)"></i> Tahap 5 \u2014 Pengemasan'+
           '<span class="sgc-help-btn" onclick="event.stopPropagation();SgcUiHelp.toggle(this,\'t5\')">?</span>'+
@@ -6341,7 +6477,7 @@ function t5InjectPage(){
           '<div style="margin-bottom:16px">'+
             '<div class="sec-label" style="margin-top:0">Langkah 1 \u2014 Scan / Input Kode Batch dari Tahap 4</div>'+
             '<div class="toolbar" style="margin-bottom:8px">'+
-              '<input id="t5-scan-batch" class="search" placeholder="Scan barcode batch atau ketik kode batch (contoh: 2806001)\u2026" style="flex:1;min-width:200px" onkeydown="if(event.key===\'Enter\')SgcT5.cariT4Batch()" onfocus="SgcQuickPick.renderT5Saran()" oninput="SgcQuickPick.renderT5Saran()">'+
+              '<input id="t5-scan-batch" class="search" placeholder="Cari kode batch, nomor produksi, atau nama produk…" style="flex:1;min-width:200px" onkeydown="if(event.key===\'Enter\')SgcT5.cariT4Batch()" onfocus="SgcQuickPick.renderT5Saran()" oninput="SgcQuickPick.renderT5Saran()">'+
               '<button class="btn primary" onclick="SgcT5.cariT4Batch()"><i class="ti ti-search"></i>Cari Batch</button>'+
             '</div>'+
             '<div id="t5-scan-chips" style="margin-bottom:6px"></div>'+
@@ -6396,6 +6532,7 @@ function t5InjectPage(){
           '<div id="t5-recovery-history" style="margin-top:6px"></div>'+
         '</div>'+
       '</div>'+
+      '<div class="card" style="margin-top:10px"><div class="card-head"><span style="font-weight:500;font-size:12px">Histori Adjustment Stok</span></div><div class="card-body" id="t5-adjustment-history"></div></div>'+
       '<div class="card" style="margin-top:10px">'+
         '<div class="card-head sgc-histori-head"><span style="font-weight:500;font-size:12px">Histori Pengemasan</span></div>'+
         '<div id="t5-histori-body"></div>'+
@@ -6415,6 +6552,48 @@ function t5InjectPage(){
    menghitung sisa belum dikemas berdasarkan histori SgcT5 — sehingga
    sisa stok betul-betul terlihat, bukan cuma tersembunyi.
    ══════════════════════════════════════════════════════════════════ */
+/* Adjustment stok Tahap 5: tidak mengubah catatan timbang awal atau histori bahan.
+   Perubahan kuantitas disimpan sebagai ledger append-only (nilai sebelum/sesudah, alasan, operator, waktu). */
+var T5_ADJ_LS='sgc_t5_adjustments_v1';
+S5.adjustments=Array.isArray(S5.adjustments)?S5.adjustments:(function(){try{return JSON.parse(localStorage.getItem(T5_ADJ_LS)||'[]')||[];}catch(e){return [];}})();
+function t5AdjSave(){try{localStorage.setItem(T5_ADJ_LS,JSON.stringify(S5.adjustments));}catch(e){}}
+function t5AdjustmentDelta(item){return S5.adjustments.filter(function(a){return a.batchKode===item.batchKode;}).reduce(function(v,a){return v+(isFinite(Number(a.selisih))?Number(a.selisih):(Number(a.jumlahBaru)||0)-(Number(a.jumlahSebelum)||0));},0);}
+function t5AdjustedQty(item){return (Number(item&&item.jumlahSiapKemas)||0)+t5AdjustmentDelta(item);}
+function t5SisaBatch(item){var packed=S5.histori.filter(function(h){return h.batchKode===item.batchKode;}).reduce(function(v,h){return v+(Number(h.totalGramDikemas)||0);},0);var rec=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(item.batchKode)>=0;}).reduce(function(v,h){var src=(h.sources||[]).find(function(z){return z.batchKode===item.batchKode;});return v+(src?Number(src.gram)||0:0);},0);return t5AdjustedQty(item)-packed-rec;}
+var T5_ADJ_STAFF_LS='sgc_t5_adjustment_staff_v1';
+function t5AdjStaffLoad(){try{return JSON.parse(localStorage.getItem(T5_ADJ_STAFF_LS)||'[]').filter(Boolean);}catch(e){return [];}}
+function t5AdjStaffSave(names){try{localStorage.setItem(T5_ADJ_STAFF_LS,JSON.stringify(names.slice(0,100)));}catch(e){}}
+function t5AdjEsc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+window.SgcT5.bukaAdjustment=function(batchKode){
+  var item=(window.SgcT4.stokSimpan||[]).find(function(x){return x.batchKode===batchKode;});if(!item)return;
+  var before=t5SisaBatch(item);
+  if(before<0){alert('Sisa batch tercatat negatif. Periksa histori kemasan terlebih dahulu.');return;}
+  S5._adjustmentCtx={batchKode:batchKode,before:before};
+  var modal=document.getElementById('t5-adjustment-modal');
+  if(!modal){
+    modal=document.createElement('div');modal.id='t5-adjustment-modal';modal.className='overlay';modal.style.zIndex='12000';
+    modal.innerHTML='<div class="modal" style="max-width:460px"><div class="mhead"><h3><i class="ti ti-adjustments" style="color:var(--blue)"></i> Sesuaikan Sisa Belum Dikemas</h3><button class="icn-btn" onclick="SgcT5.tutupAdjustment()"><i class="ti ti-x"></i></button></div><div class="mbody">'+
+      '<div id="t5-adj-batch-info" style="padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-1);font-size:11px;margin-bottom:12px"></div>'+
+      '<div class="field"><label>Penyesuaian stok</label><div style="display:flex;gap:8px"><button type="button" id="t5-adj-plus" class="btn success" style="flex:1" onclick="SgcT5.pilihArahAdjustment(1)"><i class="ti ti-plus"></i> Bertambah</button><button type="button" id="t5-adj-minus" class="btn" style="flex:1" onclick="SgcT5.pilihArahAdjustment(-1)"><i class="ti ti-minus"></i> Berkurang</button></div></div>'+
+      '<div class="field" style="margin-top:10px"><label id="t5-adj-qty-label">Jumlah (gram)</label><input id="t5-adj-qty" type="number" min="0.01" step="any" placeholder="Contoh: 10" oninput="SgcT5.previewAdjustment()"><div id="t5-adj-preview" style="font-size:10px;color:var(--text-muted);margin-top:5px">Pilih bertambah atau berkurang, lalu isi jumlahnya.</div></div>'+
+      '<div class="field" style="margin-top:10px"><label>Alasan penyesuaian</label><select id="t5-adj-reason" onchange="SgcT5.onAlasanAdjustment()"><option value="">— Pilih alasan —</option><option>Untuk tester</option><option>Salah timbang di Tahap 3</option><option>Selisih hasil penimbangan ulang</option><option>Tumpah / terbuang saat proses</option><option>Produk rusak</option><option>Koreksi pencatatan stok</option><option value="Lainnya">Lainnya</option></select><textarea id="t5-adj-reason-other" rows="2" placeholder="Tuliskan alasan lainnya…" style="display:none;margin-top:7px"></textarea></div>'+
+      '<div class="field" style="margin-top:10px;position:relative"><label>Nama pegawai</label><input id="t5-adj-employee" autocomplete="off" placeholder="Ketik nama pegawai…" oninput="SgcT5.saranPegawaiAdjustment()" onfocus="SgcT5.saranPegawaiAdjustment()"><div id="t5-adj-employee-suggestions" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:5;background:var(--surface);border:1px solid var(--border);border-radius:7px;box-shadow:0 6px 18px #0002;max-height:150px;overflow:auto"></div><div style="font-size:9px;color:var(--text-muted);margin-top:4px">Nama yang pernah dipakai akan muncul sebagai saran setelah mengetik minimal 3 huruf.</div></div>'+
+      '</div><div class="mfoot"><button class="btn" onclick="SgcT5.tutupAdjustment()">Batal</button><button class="btn primary" onclick="SgcT5.simpanAdjustment()"><i class="ti ti-device-floppy"></i> Simpan Penyesuaian</button></div></div>';
+    document.body.appendChild(modal);
+  }
+  document.getElementById('t5-adj-batch-info').innerHTML='<strong>Batch '+t5AdjEsc(batchKode)+'</strong><div style="margin-top:4px">Sisa saat ini: <strong>'+before.toLocaleString('id-ID')+' gram</strong></div>';
+  document.getElementById('t5-adj-qty').value='';document.getElementById('t5-adj-reason').value='';document.getElementById('t5-adj-reason-other').value='';document.getElementById('t5-adj-reason-other').style.display='none';document.getElementById('t5-adj-employee').value='';document.getElementById('t5-adj-employee-suggestions').style.display='none';
+  S5._adjustmentDirection=0;window.SgcT5.pilihArahAdjustment(0);modal.style.display='flex';
+};
+window.SgcT5.tutupAdjustment=function(){var m=document.getElementById('t5-adjustment-modal');if(m)m.style.display='none';};
+window.SgcT5.pilihArahAdjustment=function(dir){S5._adjustmentDirection=dir;var a=document.getElementById('t5-adj-plus'),b=document.getElementById('t5-adj-minus'),p=document.getElementById('t5-adj-preview');if(a)a.style.opacity=dir===1?'1':'.65';if(b)b.style.opacity=dir===-1?'1':'.65';if(a)a.style.outline=dir===1?'2px solid var(--green)':'none';if(b)b.style.outline=dir===-1?'2px solid var(--red)':'none';if(p)p.textContent=dir===0?'Pilih bertambah atau berkurang, lalu isi jumlahnya.':(dir===1?'Jumlah akan ditambahkan ke sisa stok.':'Jumlah akan dikurangi dari sisa stok.');window.SgcT5.previewAdjustment();};
+window.SgcT5.previewAdjustment=function(){var ctx=S5._adjustmentCtx;if(!ctx)return;var q=Number((document.getElementById('t5-adj-qty')||{}).value)||0;var dir=S5._adjustmentDirection||0;var after=ctx.before+dir*q;var el=document.getElementById('t5-adj-preview');if(el&&dir&&q>0)el.textContent='Perkiraan sisa setelah penyesuaian: '+after.toLocaleString('id-ID')+' gram';};
+window.SgcT5.onAlasanAdjustment=function(){var sel=document.getElementById('t5-adj-reason'),other=document.getElementById('t5-adj-reason-other');if(other)other.style.display=sel&&sel.value==='Lainnya'?'block':'none';};
+window.SgcT5.saranPegawaiAdjustment=function(){var inp=document.getElementById('t5-adj-employee'),box=document.getElementById('t5-adj-employee-suggestions');if(!inp||!box)return;var q=inp.value.trim().toLowerCase();if(q.length<3){box.style.display='none';return;}var names=Array.from(new Set(['Joko','Linda'].concat(t5AdjStaffLoad(),S5.adjustments.map(function(a){return a.operator||'';})).filter(Boolean)));var hits=names.filter(function(n){return n.toLowerCase().indexOf(q)>=0;}).slice(0,8);box.innerHTML=hits.map(function(n){return '<div style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border)" onmousedown="SgcT5.pilihPegawaiAdjustment(\''+t5AdjEsc(n).replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')">'+t5AdjEsc(n)+'</div>';}).join('');box.style.display=hits.length?'block':'none';};
+window.SgcT5.pilihPegawaiAdjustment=function(name){var inp=document.getElementById('t5-adj-employee'),box=document.getElementById('t5-adj-employee-suggestions');if(inp)inp.value=name;if(box)box.style.display='none';};
+window.SgcT5.simpanAdjustment=function(){var ctx=S5._adjustmentCtx;if(!ctx)return;var dir=S5._adjustmentDirection||0;var qty=Number((document.getElementById('t5-adj-qty')||{}).value)||0;if(!dir){alert('Pilih Bertambah atau Berkurang.');return;}if(!isFinite(qty)||qty<=0){alert('Masukkan jumlah lebih dari 0 gram.');return;}var delta=dir*qty,after=ctx.before+delta;if(after<0){alert('Sisa tidak boleh menjadi negatif. Sisa saat ini '+ctx.before.toLocaleString('id-ID')+' gram.');return;}var reasonSel=document.getElementById('t5-adj-reason'),reason=reasonSel?reasonSel.value:'';if(reason==='Lainnya')reason=(document.getElementById('t5-adj-reason-other').value||'').trim();if(!reason){alert('Pilih alasan penyesuaian.');return;}var operator=(document.getElementById('t5-adj-employee').value||'').trim();if(!operator){alert('Nama pegawai wajib diisi.');return;}var names=Array.from(new Set(t5AdjStaffLoad().concat([operator])));t5AdjStaffSave(names);S5.adjustments.push({id:'ADJ-'+Date.now(),batchKode:ctx.batchKode,jenis:'sisa_belum_dikemas',sisaSebelum:ctx.before,sisaSesudah:after,jumlahSebelum:ctx.before,jumlahBaru:after,selisih:delta,arah:dir>0?'bertambah':'berkurang',alasan:reason,operator:operator,waktu:t5NowLocal()});t5AdjSave();window.SgcT5.tutupAdjustment();window.SgcT5.refreshStokTersedia();window.SgcT5.renderAdjustmentHistory();};
+window.SgcT5.renderAdjustmentHistory=function(){var body=document.getElementById('t5-adjustment-history');if(!body)return;var rows=S5.adjustments.slice().reverse();body.innerHTML=rows.length?rows.map(function(a){var legacy=a.jenis!=='sisa_belum_dikemas';return '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:10px"><strong><code>'+a.batchKode+'</code></strong> · '+(legacy?'Jumlah batch sebelum ':'Sisa sebelum ')+Number(a.jumlahSebelum).toLocaleString('id-ID')+' gr → <strong>'+(legacy?'Jumlah batch sesudah ':'Sisa sesudah ')+Number(a.jumlahBaru).toLocaleString('id-ID')+' gr</strong><div style="color:var(--text-muted)">Adjust '+(Number(a.selisih)>0?'+':'')+Number(a.selisih).toLocaleString('id-ID')+' gr · '+a.alasan+' · '+a.operator+' · '+t5TsLabel(a.waktu)+'</div></div>';}).join(''):'<div style="font-size:10px;color:var(--text-muted)">Belum ada adjustment.</div>';};
+
 window.SgcT5.refreshStokTersedia=function(){
   var tbody=document.getElementById('t5-stok-tersedia-tbody');
   var empty=document.getElementById('t5-stok-tersedia-empty');
@@ -6426,10 +6605,15 @@ window.SgcT5.refreshStokTersedia=function(){
     var recovered=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(it.batchKode)>=0;}).reduce(function(s,h){
       var src=(h.sources||[]).find(function(x){return x.batchKode===it.batchKode;}); return s+(src?Number(src.gram)||0:0);
     },0);
-    var sisa=(it.jumlahSiapKemas||0)-dikemas-recovered;
-    return {it:it, dikemas:dikemas, sisa:sisa};
-  }).filter(function(r){return r.sisa>0;});
-  if(!rows.length){
+    var qtyAktif=t5AdjustedQty(it);
+    var sisa=qtyAktif-dikemas-recovered;
+    return {it:it, dikemas:dikemas, sisa:sisa, qtyAktif:qtyAktif};
+  });
+  var rowsAktif=rows.filter(function(r){return r.sisa>0;});
+  var rowsHabis=rows.filter(function(r){return r.sisa<=0;});
+  var doneBox=document.getElementById('t5-stok-habis-body');
+  if(doneBox){doneBox.innerHTML=rowsHabis.length?rowsHabis.slice().reverse().map(function(r){return '<div style="padding:7px 0;border-bottom:1px solid var(--border);font-size:11px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><div><strong><code>'+r.it.batchKode+'</code> — '+(r.it.namaProduk||'')+'</strong><div style="color:var(--text-muted)">Jumlah akhir: '+Number(r.qtyAktif).toLocaleString('id-ID')+' gr · Dikemas/recovery: '+Number(r.dikemas).toLocaleString('id-ID')+' gr</div></div><button class="btn sm" onclick="SgcT5.bukaAdjustment(&quot;'+String(r.it.batchKode).replace(/"/g,'&quot;')+'&quot;)"><i class="ti ti-adjustments"></i>Adjust Sisa</button></div>';}).join(''):'<div class="empty-state" style="padding:12px">Belum ada batch yang habis dikemas.</div>'; }
+  if(!rowsAktif.length){
     tbody.innerHTML='';
     if(table) table.style.display='none';
     if(empty) empty.style.display='block';
@@ -6438,16 +6622,19 @@ window.SgcT5.refreshStokTersedia=function(){
   if(table) table.style.display='';
   if(empty) empty.style.display='none';
   var html='';
-  rows.slice().reverse().forEach(function(r){
+  rowsAktif.slice().reverse().forEach(function(r){
+    var pernahDikemas=r.dikemas>0;
     html+='<tr>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)"><code>'+r.it.batchKode+'</code></td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border)">'+(r.it.namaProduk||'')+'</td>'+
-      '<td style="padding:6px 8px;border-bottom:.5px solid var(--border);text-align:right">'+Number(r.it.jumlahSiapKemas||0).toLocaleString('id-ID')+' gr</td>'+
+      '<td style="padding:6px 8px;border-bottom:.5px solid var(--border);text-align:right">'+Number(r.qtyAktif||0).toLocaleString('id-ID')+' gr</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border);text-align:right">'+Number(r.dikemas).toLocaleString('id-ID')+' gr</td>'+
+      '<td style="padding:6px 8px;border-bottom:.5px solid var(--border);text-align:right;font-weight:600;color:'+(t5AdjustmentDelta(r.it)>=0?'var(--green)':'var(--red)')+'">'+(t5AdjustmentDelta(r.it)>0?'+':'')+Number(t5AdjustmentDelta(r.it)).toLocaleString('id-ID')+' gr</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border);text-align:right;font-weight:600;color:var(--green)">'+Number(r.sisa).toLocaleString('id-ID')+' gr</td>'+
       '<td style="padding:6px 8px;border-bottom:.5px solid var(--border);text-align:center">'+
-        '<button class="btn sm primary" onclick="document.getElementById(&quot;t5-scan-batch&quot;).value=&quot;'+String(r.it.batchKode).replace(/"/g,'&quot;')+'&quot;;SgcT5.cariT4Batch();">'+
-          '<i class="ti ti-package"></i>Kemas Batch Ini</button>'+
+        '<button class="btn sm '+(pernahDikemas?'':'success')+'" style="'+(pernahDikemas?'background:#FFF3CD;border-color:#F0C36D;color:#805B00;':'')+'" onclick="document.getElementById(&quot;t5-scan-batch&quot;).value=&quot;'+String(r.it.batchKode).replace(/"/g,'&quot;')+'&quot;;SgcT5.cariT4Batch();">'+
+          '<i class="ti ti-package"></i>'+(pernahDikemas?'Lanjutkan Kemas':'Kemas Batch Ini')+'</button>'+
+        '<button class="btn sm" style="margin-left:4px" onclick="SgcT5.bukaAdjustment(\''+String(r.it.batchKode).replace(/'/g,"\\'")+'\')"><i class="ti ti-adjustments"></i>Adjustment</button>'+
       '</td>'+
     '</tr>';
   });
@@ -6528,8 +6715,15 @@ window.SgcT5.cariT4Batch=function(){
   if(!kode){SgcUxAction.restore(btn);alert('Masukkan kode batch terlebih dahulu.');return;}
   var stok=window.SgcT4&&window.SgcT4.stokSimpan;
   if(!stok||!stok.length){SgcUxAction.restore(btn);alert('Belum ada data Tahap 4. Selesaikan tahap 3 (panggang) terlebih dahulu.');return;}
-  var item=stok.find(function(x){return x.batchKode.toUpperCase()===kode;});
-  if(!item){SgcUxAction.restore(btn);alert('Kode batch "'+kode+'" tidak ditemukan di Tahap 4.');return;}
+  var item=null;
+  var matches=stok.filter(function(x){return (x.batchKode||'').toUpperCase()===kode || (x.nomorInduk||'').toUpperCase()===kode || (x.namaProduk||'').toLowerCase().indexOf(kode.toLowerCase())>=0;});
+  if(matches.length>1){
+    var opts=matches.map(function(x){return (x.batchKode||'')+' — '+(x.namaProduk||'')+' (sisa '+t5SisaBatch(x).toLocaleString('id-ID')+' gr)';}).join('\n');
+    var pilih=prompt('Ditemukan beberapa batch. Ketik kode batch yang akan diproses:\n'+opts);
+    if(!pilih){SgcUxAction.restore(btn);return;}
+    item=stok.find(function(x){return (x.batchKode||'').toUpperCase()===pilih.trim().toUpperCase();});
+  }else{item=matches[0];}
+  if(!item){SgcUxAction.restore(btn);alert('Kode produksi atau nama produk tidak ditemukan di Tahap 4.');return;}
   /* PERBAIKAN: kalau batch ini masih berstatus "menunggu disimpan" di Tahap 4
      (staf belum sempat klik "Simpan" di sana), begitu batch mulai dikemas di
      sini otomatis ditandai "tersimpan" — supaya statusnya tidak nyangkut
@@ -6541,7 +6735,7 @@ window.SgcT5.cariT4Batch=function(){
   var sudahRecovery=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(item.batchKode)>=0;}).reduce(function(s,h){
     var src=(h.sources||[]).find(function(x){return x.batchKode===item.batchKode;}); return s+(src?Number(src.gram)||0:0);
   },0);
-  var sisaGram=(item.jumlahSiapKemas||0)-sudahDikemas-sudahRecovery;
+  var sisaGram=t5AdjustedQty(item)-sudahDikemas-sudahRecovery;
   var expiryInfo=sgcGetKemasExpiryInfo(item);
   S5._wip={batch:item, sisaGram:sisaGram, items:[], expiryInfo:expiryInfo};
   var infoDiv=document.getElementById('t5-batch-info');
@@ -6582,7 +6776,7 @@ window.SgcT5._siapkanProsedurWajib=function(item){
   if(jenis==='chiller'||jenis==='freezer'){
     var label=window.T4_JENIS_LABEL[jenis]||jenis;
     var instr=window.sgcGetInstruksiKemasJenis(item.sku,jenis)||'Belum ada instruksi pengemasan khusus untuk jenis ini di Resep Master. Tetap ikuti SOP kebersihan & kecepatan pengemasan produk dingin/beku standar dan hubungi Owner untuk melengkapi instruksi.';
-    S5._wip.wajibKonfirmasi=true;
+    S5._wip.wajibKonfirmasi=false;
     if(titleEl) titleEl.innerHTML='<i class="ti ti-alert-triangle"></i> Produk ini berasal dari '+label+' — wajib ikuti prosedur pengemasan';
     if(textEl) textEl.textContent=instr;
     if(box) box.style.display='block';
@@ -6597,7 +6791,7 @@ window.SgcT5._toggleTombolSimpan=function(){
   if(!btn) return;
   var cb=document.getElementById('t5-prosedur-cb');
   var wajib=!!(S5._wip&&S5._wip.wajibKonfirmasi);
-  var terkunci=wajib&&!(cb&&cb.checked);
+  var terkunci=false;
   btn.disabled=terkunci;
   btn.style.opacity=terkunci?'0.5':'1';
   btn.style.cursor=terkunci?'not-allowed':'pointer';
@@ -6703,15 +6897,8 @@ window.SgcT5.simpanPengemasan=function(){
   var operator=(document.getElementById('t5-operator').value||'').trim();
   if(!operator){SgcUxAction.restore(btn);alert('Nama operator pengemasan wajib diisi.');return;}
   var expiryInfo=S5._wip.expiryInfo||sgcGetKemasExpiryInfo(S5._wip.batch);
-  if(!expiryInfo.date){
-    SgcUxAction.restore(btn);
-    alert('Expired produk belum dapat dihitung. Owner perlu mengatur masa simpan Produk Intermediate / Ready to Eat di Resep Master → Tutorial → Tahap Pengemasan.');
-    return;
-  }
-  if(S5._wip.wajibKonfirmasi){
-    var cbProsedur=document.getElementById('t5-prosedur-cb');
-    if(!cbProsedur||!cbProsedur.checked){SgcUxAction.restore(btn);alert('Produk ini berasal dari Chiller/Freezer. Anda wajib membaca & mencentang konfirmasi prosedur pengemasan terlebih dahulu.');return;}
-  }
+  /* Expired produk adalah pengaturan pendukung; batch tetap boleh dikemas bila belum dikonfigurasi. */
+  /* Prosedur yang belum dikonfigurasi tidak boleh memblokir pengemasan. */
   var items=[]; var valid=true;
   rows.forEach(function(row){
     var skuCode=row.dataset.sku;
@@ -6733,6 +6920,7 @@ window.SgcT5.simpanPengemasan=function(){
     batchKode:S5._wip.batch.batchKode,
     namaProduk:S5._wip.batch.namaProduk,
     jumlahAwalGram:S5._wip.batch.jumlahSiapKemas,
+    jumlahDasarSaatKemas:t5AdjustedQty(S5._wip.batch),
     totalGramDikemas:S5._wip._totalGram||0,
     sisaGram:S5._wip._sisa||0,
     items:items,
@@ -6753,7 +6941,7 @@ window.SgcT5.simpanPengemasan=function(){
       var totalRecoveryAkum=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(record.batchKode)>=0;}).reduce(function(s,h){
         var src=(h.sources||[]).find(function(x){return x.batchKode===record.batchKode;}); return s+(src?Number(src.gram)||0:0);
       },0);
-      if(totalDikemasAkum+totalRecoveryAkum>=(t4item.jumlahSiapKemas||0)){ t4item.status='dikemas_habis'; }
+      if(totalDikemasAkum+totalRecoveryAkum>=t5AdjustedQty(t4item)){ t4item.status='dikemas_habis'; }
       /* Simpan ulang ke localStorage T4 */
       try{localStorage.setItem('sgc_t4_stok_simpan_v1',JSON.stringify(window.SgcT4.stokSimpan));}catch(e){}
     }
@@ -6769,6 +6957,7 @@ window.SgcT5.simpanPengemasan=function(){
   var cbReset=document.getElementById('t5-prosedur-cb'); if(cbReset) cbReset.checked=false;
   S5._wip=null;
   window.SgcT5.renderHistori();
+  window.SgcT5.renderAdjustmentHistory();
   if(typeof window.SgcT4.refresh==='function') window.SgcT4.refresh();
   SgcUxAction.restore(btn); SgcUxAction.flash('Pengemasan berhasil dicatat. Stok Tahap 4 sudah diperbarui.','success');
 };
@@ -6806,7 +6995,7 @@ function t5RecoveryAvailableRows(){
     var recovered=S5.recovery.filter(function(h){return (h.batchKodes||[]).indexOf(it.batchKode)>=0;}).reduce(function(s,h){
       var src=(h.sources||[]).find(function(x){return x.batchKode===it.batchKode;}); return s+(src?Number(src.gram)||0:0);
     },0);
-    var sisa=(Number(it.jumlahSiapKemas)||0)-dikemas-recovered;
+    var sisa=t5AdjustedQty(it)-dikemas-recovered;
     var expiry=sgcGetKemasExpiryInfo(it);
     var expired=expiry.date && expiry.date < new Date().toISOString().slice(0,10);
     return {it:it,sisa:sisa,expiry:expiry,expired:expired};
@@ -6939,6 +7128,7 @@ window.SgcT5.goT5=function(btn){
   var tb=document.getElementById('page-title'); if(tb) tb.textContent='Tahap 5 \u2014 Pengemasan';
   var ts=document.getElementById('page-sub'); if(ts) ts.textContent='Packaging produk jadi dari stok Tahap 4';
   window.SgcT5.renderHistori();
+  window.SgcT5.renderAdjustmentHistory();
   window.SgcT5.refreshStokTersedia();
   window.SgcT5.renderRecovery();
   window.SgcT5.renderRecoveryHistory();
@@ -6965,6 +7155,7 @@ function t5SkuInit(){
   t5InjectNav();
   t5InjectPage();
   window.SgcT5.renderHistori();
+  window.SgcT5.renderAdjustmentHistory();
   window.SgcT5.refreshStokTersedia();
 }
 if(document.readyState==='loading'){
@@ -11197,16 +11388,24 @@ function taskState(p){
   var no=p.noDok;
   var batches=(t2.batchList||[]).filter(function(b){return b&&b.nomorInduk===no;});
   var batchCodes=batches.map(function(b){return b.batchKode;});
-  var sent=(t6.historiKirim||[]).some(function(d){return (d.items||[]).some(function(it){return batchCodes.indexOf(it.batchKode)!==-1;});});
-  if(sent) return {done:true,stage:6,key:'done'};
-  var packaged=(t5.histori||[]).some(function(h){return batchCodes.indexOf(h.batchKode)!==-1;});
-  if(packaged) return {stage:6,key:'t6',action:'Kirim ke gudang',icon:'ti-truck-delivery',meta:'Produk sudah dikemas dan masih tersedia untuk dikirim.'};
+  var sentCodes=batchCodes.filter(function(code){return (t6.historiKirim||[]).some(function(d){return (d.items||[]).some(function(it){return it.batchKode===code;});});});
+  if(batchCodes.length && sentCodes.length===batchCodes.length) return {done:true,stage:6,key:'done'};
   var stored=(t4.stokSimpan||[]).filter(function(x){return x.nomorInduk===no;});
-  if(stored.length){
-    var pendingStore=stored.find(function(x){return x.status!=='tersimpan';});
-    if(pendingStore) return {stage:4,key:'t4',action:'Simpan produk',icon:'ti-archive',meta:'Batch sudah tersedia. Lengkapi penyimpanan dan label.',batchKode:pendingStore.batchKode,id:pendingStore.id};
-    return {stage:5,key:'t5',action:'Kemas produk',icon:'ti-package',meta:'Produk sudah tersimpan dan siap dikemas.',batchKode:stored[stored.length-1].batchKode};
-  }
+  var pendingStore=stored.find(function(x){return x.status!=='tersimpan'||!x.expiredPenyimpanan;});
+  if(pendingStore) return {stage:4,key:'t4',action:'Simpan / lengkapi penyimpanan',icon:'ti-archive',meta:'Status simpan atau Expired Penyimpanan belum lengkap.',batchKode:pendingStore.batchKode,id:pendingStore.id};
+  var packagedCodes=batchCodes.filter(function(code){return (t5.histori||[]).some(function(h){return h.batchKode===code;});});
+  var packagingPending=null;
+  packagedCodes.some(function(code){
+    var src=(t4.stokSimpan||[]).find(function(x){return x.batchKode===code;});if(!src)return false;
+    var packed=(t5.histori||[]).filter(function(h){return h.batchKode===code;}).reduce(function(v,h){return v+(Number(h.totalGramDikemas)||0);},0);
+    var recovered=(t5.recovery||[]).filter(function(h){return (h.batchKodes||[]).indexOf(code)>=0;}).reduce(function(v,h){var z=(h.sources||[]).find(function(x){return x.batchKode===code;});return v+(z?Number(z.gram)||0:0);},0);
+    var delta=(t5.adjustments||[]).filter(function(a){return a.batchKode===code;}).reduce(function(v,a){return v+(Number(a.selisih)||0);},0);
+    if((Number(src.jumlahSiapKemas)||0)+delta-packed-recovered>0){packagingPending=code;return true;}return false;
+  });
+  if(packagingPending) return {stage:5,key:'t5',action:'Lanjutkan pengemasan',icon:'ti-package',meta:'Masih ada sisa produk yang belum dikemas.',batchKode:packagingPending};
+  var unpackagedStore=stored.find(function(x){return packagedCodes.indexOf(x.batchKode)===-1;});
+  if(unpackagedStore) return {stage:5,key:'t5',action:'Kemas produk',icon:'ti-package',meta:'Produk sudah tersimpan dan siap dikemas.',batchKode:unpackagedStore.batchKode};
+  if(packagedCodes.length) return {stage:6,key:'t6',action:'Kirim ke gudang',icon:'ti-truck-delivery',meta:'Seluruh produk batch sudah dikemas dan menunggu pengiriman.' ,batchKode:packagedCodes[0]};
   if(batches.length){
     var openBatch=batches.find(function(b){return !b.selesai;});
     if(openBatch) return {stage:3,key:'t3finish',action:'Selesaikan panggang',icon:'ti-flame',meta:'Batch sedang berada di oven. Masukkan hasil panggang saat selesai.',batchKode:openBatch.batchKode};
@@ -11258,7 +11457,10 @@ function taskHtml(t){
     '<div class="sgc-task-main"><div class="sgc-task-icon"><i class="ti '+esc(t.icon)+'"></i></div><div class="sgc-task-copy">'+
     '<div class="sgc-task-action">'+esc(t.action)+'</div><div class="sgc-task-product">'+esc(t.product)+'</div>'+
     '<div style="font-size:10px;color:#55705c;margin-bottom:4px">Tugas Anda sekarang</div>'+
-    '<div class="sgc-task-meta">Nomor Induk: <code>'+esc(t.noDok)+'</code><br>'+esc(t.meta)+'</div></div></div>'+button+'</div>';
+    '<div class="sgc-task-meta">Nomor Induk: <code>'+esc(t.noDok)+'</code><br>'+
+    'Posisi: <strong>'+esc(({t1:'Belum mulai produksi',t2:'Tahap 1 selesai',t3:'Tahap 2 selesai',t3finish:'Tahap 3 sedang berjalan',t4:'Tahap 3 selesai',t5:'Tahap 4 selesai',t6:'Tahap 5 selesai'}[t.key]||'Dalam proses'))+'</strong><br>'+
+    'Tanggal perencanaan: <strong>'+esc(t.p.dibuatPada||t.p.tglRencana||'—')+'</strong><br>'+
+    (t.batchKode?'Kode batch: <code>'+esc(t.batchKode)+'</code><br>':'')+esc(t.meta)+'</div></div></div>'+button+'</div>';
 }
 
 /* Fungsi pembuka: setiap fungsi hanya mengorkestrasi fungsi existing. */
@@ -11626,5 +11828,63 @@ document.addEventListener('DOMContentLoaded',function(){
   if(typeof sgcWatchStageTables==='function') sgcWatchStageTables();
 });
 </script>
+
+<script>
+/* HISTORY UX PATCH — semua daftar selesai default 10 terbaru, bisa dibuka penuh dan dicari. */
+(function(){
+  function rowsFor(id){
+    var host=document.getElementById(id);if(!host)return [];
+    var tableRows=Array.prototype.slice.call(host.querySelectorAll('tbody tr'));
+    if(tableRows.length)return tableRows;
+    var sel='.sgc-dough-row,.sgc-oven-row,.t5-pkg-hist-row';
+    var found=Array.prototype.slice.call(host.querySelectorAll(sel));
+    if(found.length)return found;
+    return Array.prototype.slice.call(host.children).filter(function(el){return !el.classList.contains('empty-state')&&!el.classList.contains('sgc-history-tools');});
+  }
+  function setup(id,label){
+    var host=document.getElementById(id);if(!host)return;
+    var controlId='sgc-history-tools-'+id;
+    var tools=document.getElementById(controlId);
+    if(!tools){
+      tools=document.createElement('div');tools.id=controlId;tools.className='sgc-history-tools';
+      tools.style.cssText='display:flex;gap:8px;flex-wrap:wrap;margin:0 0 9px';
+      tools.innerHTML='<select class="search sgc-history-mode" style="max-width:190px"><option value="recent">10 history terbaru</option><option value="all">Semua history</option></select><input class="search sgc-history-query" placeholder="Cari '+label+'…" style="flex:1;min-width:170px">';
+      host.parentNode.insertBefore(tools,host);
+      tools.querySelector('select').addEventListener('change',function(){apply(id);});
+      tools.querySelector('input').addEventListener('input',function(){apply(id);});
+    }
+    apply(id);
+  }
+  function apply(id){
+    var host=document.getElementById(id),tools=document.getElementById('sgc-history-tools-'+id);if(!host||!tools)return;
+    var mode=tools.querySelector('select').value,q=tools.querySelector('input').value.toLowerCase().trim();
+    var all=rowsFor(id),matches=all.filter(function(el){return !q||el.innerText.toLowerCase().indexOf(q)>=0;});
+    var shown=(q||mode==='all')?matches:matches.slice(0,10);
+    var visible=new Set(shown);
+    all.forEach(function(el){el.style.display=visible.has(el)?'':'none';});
+    var empty=host.querySelector('.sgc-history-filter-empty');
+    if(!empty){empty=document.createElement('div');empty.className='sgc-history-filter-empty empty-state';empty.style.cssText='display:none;padding:12px';empty.textContent='History tidak ditemukan.';host.appendChild(empty);}
+    empty.style.display=matches.length?'none':'block';
+  }
+  function wrap(obj,fn,id,label){
+    if(!obj||typeof obj[fn]!=='function'||obj[fn].__historyWrapped)return;
+    var old=obj[fn];var wrapped=function(){var r=old.apply(this,arguments);setup(id,label);return r;};wrapped.__historyWrapped=true;obj[fn]=wrapped;
+  }
+  function install(){
+    if(typeof window.renderMpHistori==='function'&&!window.renderMpHistori.__historyWrapped){var old=window.renderMpHistori;window.renderMpHistori=function(){var r=old.apply(this,arguments);setup('mp-histori-body','nomor dokumen / produk');return r;};window.renderMpHistori.__historyWrapped=true;}
+    if(window.SgcT2){wrap(window.SgcT2,'refreshDoughDashboard','t2-histori-body','label dough / produk');wrap(window.SgcT2,'refreshOvenDashboard','t3-histori-body','kode batch / produk');}
+    if(window.SgcT5){wrap(window.SgcT5,'renderHistori','t5-histori-body','kode batch / produk / operator');wrap(window.SgcT5,'refreshStokTersedia','t5-stok-habis-body','kode batch / produk');}
+    if(window.SgcT6)wrap(window.SgcT6,'renderHistori','t6-histori-body','nomor SPB / batch / admin');
+    setup('mp-histori-body','nomor dokumen / produk');setup('t2-histori-body','label dough / produk');setup('t3-histori-body','kode batch / produk');setup('t5-histori-body','kode batch / produk / operator');setup('t6-histori-body','nomor SPB / batch / admin');
+    setup('t5-stok-habis-body','kode batch / produk');
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',install);else install();
+  var oldT5=window.SgcT5&&window.SgcT5.renderHistori;
+  if(oldT5&&!oldT5.__historyWrapped){window.SgcT5.renderHistori=function(){var r=oldT5.apply(this,arguments);setup('t5-histori-body','kode batch / produk / operator');return r;};window.SgcT5.renderHistori.__historyWrapped=true;}
+  var oldT6=window.SgcT6&&window.SgcT6.renderHistori;
+  if(oldT6&&!oldT6.__historyWrapped){window.SgcT6.renderHistori=function(){var r=oldT6.apply(this,arguments);setup('t6-histori-body','nomor SPB / batch / admin');return r;};window.SgcT6.renderHistori.__historyWrapped=true;}
+})();
+</script>
+
 </body>
 </html>
