@@ -1567,7 +1567,15 @@ function initApp(){
   window.wmsListenCustomers(function(list){ STATE.customers = list; renderOutboundList(); if(_labelOrder) renderPenerimaPreview(_labelOrder); });
   window.wmsListenStock(function(list){ STATE.stock = list; renderStokTable(); renderDashboard(); });
   window.wmsListenRacks(function(list){ STATE.racks = list; renderRakGrid(); fillRakSelect(); });
-  window.wmsListenRackStock(function(list){ STATE.rackStock = list; renderRackStockTable(); renderRakGrid(); });
+  window.wmsListenRackStock(function(list){
+    // Penting: tabel stok + banner belum-di-rak bergantung pada STATE.rackStock.
+    // Sebelumnya listener hanya memperbarui tabel isi rak dan denah rak, sehingga
+    // banner tetap menampilkan data lama setelah penempatan berhasil disimpan.
+    STATE.rackStock = list;
+    renderRackStockTable();
+    renderRakGrid();
+    renderStokTable(); // sinkronkan ulang status lokasi setiap ada perubahan Firestore
+  });
   window.wmsListenInbound(function(list){ STATE.inbound = list; renderInboundList(); renderDashboard(); });
   window.wmsListenOutbound(function(list){ STATE.outbound = list; renderOutboundList(); renderDashboard(); });
   window.wmsListenMovements(function(list){ STATE.movements = list; renderRiwayat(); renderDashboard(); });
@@ -1609,15 +1617,18 @@ function badgeTipe(t){
 }
 
 /* ---------- Produk & Stok ---------- */
+// SKU dari dokumen lama kadang tersimpan dengan spasi/huruf berbeda.
+// Samakan kunci pencocokan agar lokasi yang sudah ada tidak dianggap hilang.
+function wmsSkuKey(value){ return String(value == null ? '' : value).trim().toUpperCase(); }
 function renderStokTable(){
   var tb = document.getElementById('tbl-stok');
   var produkBelumRak = []; // FIX: kumpulkan SKU yang stok agregatnya > total di rack_stock
   tb.innerHTML = STATE.products.map(function(p){
-    var s = STATE.stock.find(function(x){ return x.sku===p.sku; }) || { stokFisik:0, stokReserved:0 };
+    var s = STATE.stock.find(function(x){ return wmsSkuKey(x.sku)===wmsSkuKey(p.sku); }) || { stokFisik:0, stokReserved:0 };
     var tersedia = (s.stokFisik||0) - (s.stokReserved||0);
     // FIX: total unit SKU ini yang SUDAH tercatat di suatu rak (rack_stock)
-    var diRak = STATE.rackStock.filter(function(rs){ return rs.sku===p.sku; }).reduce(function(a,b){ return a+(b.qty||0); }, 0);
-    var belumDiRak = Math.max(0, (s.stokFisik||0) - diRak);
+    var diRak = STATE.rackStock.filter(function(rs){ return wmsSkuKey(rs.sku)===wmsSkuKey(p.sku); }).reduce(function(a,b){ return a+(Number(b.qty)||0); }, 0);
+    var belumDiRak = Math.max(0, (Number(s.stokFisik)||0) - diRak);
     if(belumDiRak>0) produkBelumRak.push({ sku:p.sku, nama:p.nama, belumDiRak:belumDiRak });
     return '<tr>'+
       '<td><span class="sku-chip" style="font-family:monospace;font-size:11px;background:#1A1F2E;border:1px solid #2A2F3E;border-radius:5px;padding:1px 7px;color:#9CA3AF">'+p.sku+'</span></td>'+
@@ -2084,14 +2095,14 @@ var _pickingAlokasi = [];   // hasil rencana FIFO, flat list semua baris dari se
 var _pickingChecked = {};   // {index: true}
 
 function rencanaPickingFIFO(sku, qtyDibutuhkan){
-  var entries = STATE.rackStock.filter(function(rs){ return rs.sku===sku && (rs.qty||0)>0; });
+  var entries = STATE.rackStock.filter(function(rs){ return wmsSkuKey(rs.sku)===wmsSkuKey(sku) && (Number(rs.qty)||0)>0; });
   entries.sort(function(a,b){
     var ea = a.tglExpired || '9999-12-31', eb = b.tglExpired || '9999-12-31';
     return ea.localeCompare(eb);
   });
   var sisa = qtyDibutuhkan, alokasi = [];
   for(var i=0;i<entries.length && sisa>0;i++){
-    var ambil = Math.min(sisa, entries[i].qty||0);
+    var ambil = Math.min(sisa, Number(entries[i].qty)||0);
     if(ambil<=0) continue;
     alokasi.push({ rackStockId: entries[i].id, rakCode: entries[i].rakCode, batchCode: entries[i].batchCode||'-', tglExpired: entries[i].tglExpired||null, qty: ambil });
     sisa -= ambil;
