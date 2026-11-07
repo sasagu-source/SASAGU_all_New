@@ -7748,6 +7748,7 @@ window.syncToFirebase = async function() {
       saveCol('pengiriman_t6', (window.SgcT6 && window.SgcT6.historiKirim) || [], 'id'),
       saveCol('t6_counter', window.SgcT6 ? [{id:'main', counter: window.SgcT6.counter}] : [], 'id'),
       saveCol('t6_audit', (window.SgcT6 && window.SgcT6.audit) || [], 'id'),
+      saveCol('t6_stock_deletions', (window.SgcT6 && window.SgcT6.stockDeletions) || [], 'id'),
       saveCol('produk_sasagu', (window.SgcSkuSasagu && window.SgcSkuSasagu.data) || [], 'sku'),
     ]);
     const gagal = results.filter(function(r){ return r && r.ok === false; });
@@ -7789,10 +7790,10 @@ window.loadFromFirebase = async function() {
   document.body.appendChild(overlay);
   try {
     const [bahan, resep, pembelian, rencana, eksekusi, stokT4, skuProduk, pengemasanT5,
-           stokDoughT2, batchT3, pengirimanT6, t6CounterDoc, t6AuditArr, produkSasagu, t6MetaDoc] = await Promise.all([
+           stokDoughT2, batchT3, pengirimanT6, t6CounterDoc, t6AuditArr, t6DeletionArr, produkSasagu, t6MetaDoc] = await Promise.all([
       loadCol('bahan'), loadCol('resep'), loadCol('pembelian'), loadCol('rencana'), loadCol('eksekusi'),
       loadCol('stok_t4'), loadCol('sku_produk'), loadCol('pengemasan_t5'),
-      loadCol('stok_dough_t2'), loadCol('batch_t3'), loadCol('pengiriman_t6'), loadCol('t6_counter'), loadCol('t6_audit'), loadCol('produk_sasagu'), loadCol('t6_batch_meta')
+      loadCol('stok_dough_t2'), loadCol('batch_t3'), loadCol('pengiriman_t6'), loadCol('t6_counter'), loadCol('t6_audit'), loadCol('t6_stock_deletions'), loadCol('produk_sasagu'), loadCol('t6_batch_meta')
     ]);
     if (bahan.length)     { window.bahanData = bahan; bahanSave(); }
     /* Firebase menjadi sumber kebenaran untuk resep yang sudah berhasil dimuat.
@@ -7926,6 +7927,10 @@ window.loadFromFirebase = async function() {
       window.SgcT6.audit = t6AuditArr;
       try { localStorage.setItem('sgc_t6_audit_v1', JSON.stringify(t6AuditArr)); } catch(e) {}
     }
+    if (t6DeletionArr.length && window.SgcT6) {
+      window.SgcT6.stockDeletions = sgcMergeById(t6DeletionArr, window.SgcT6.stockDeletions || [], 'id');
+      try { localStorage.setItem('sgc_t6_stock_deletions_v1', JSON.stringify(window.SgcT6.stockDeletions)); } catch(e) {}
+    }
     if (t6MetaDoc.length && window.SgcT6) {
       const mainMeta = t6MetaDoc.find(d => d.id === 'main');
       if (mainMeta && mainMeta.meta) {
@@ -7944,6 +7949,7 @@ window.loadFromFirebase = async function() {
     if (window.SgcT2 && typeof window.SgcT2.refreshOvenDashboard === 'function') window.SgcT2.refreshOvenDashboard();
     if (window.SgcT6 && typeof window.SgcT6.renderHistori === 'function') window.SgcT6.renderHistori();
     if (window.SgcT6 && typeof window.SgcT6.renderAuditHistori === 'function') window.SgcT6.renderAuditHistori();
+    if (window.SgcT6 && typeof window.SgcT6.renderDeletionHistory === 'function') { window.SgcT6.renderDeletionHistory(); window.SgcT6.renderAvailable(); }
     if (window.SgcSkuSasagu && typeof window.SgcSkuSasagu.renderTable === 'function') window.SgcSkuSasagu.renderTable();
     document.body.removeChild(overlay);
     console.log('[SASAGU] Data berhasil dimuat dari Firebase ✅');
@@ -9614,7 +9620,8 @@ window.SgcT6 = window.SgcT6 || {
   historiKirim: t6Load(),
   counter: t6LoadCounter(),
   audit: t6LoadAudit(),
-  batchMeta: t6LoadMeta()
+  batchMeta: t6LoadMeta(),
+  stockDeletions: (function(){try{return JSON.parse(localStorage.getItem('sgc_t6_stock_deletions_v1')||'[]');}catch(e){return [];}})()
 };
 var S6 = window.SgcT6;
 S6._wip = null;
@@ -9692,10 +9699,17 @@ function t6HitungStok(){
       if(map[key]) map[key].dikirim += (it.jumlah||0);
     });
   });
+  /* Produk yang dihapus Owner dari Langkah 1 dikurangi dari stok tersedia,
+     tanpa mengubah histori pengemasan Tahap 5 maupun histori pengiriman. */
+  var dihapusMap={};
+  (S6.stockDeletions||[]).forEach(function(rec){
+    var key=rec.batchKode+'|'+rec.skuCode;
+    dihapusMap[key]=(dihapusMap[key]||0)+(Number(rec.jumlah)||0);
+  });
   return Object.keys(map).map(function(k){
-    var x=map[k];
+    var x=map[k], tersedia=x.dikemas-x.dikirim-(dihapusMap[k]||0);
     return {batchKode:x.batchKode, skuCode:x.skuCode, namaProduk:x.namaProduk, satuan:'pcs',
-            dikemas:x.dikemas, dikirim:x.dikirim, tersedia:x.dikemas-x.dikirim, jenisPenyimpanan:x.jenisPenyimpanan, tglExpired:x.tglExpired||''};
+            dikemas:x.dikemas, dikirim:x.dikirim, tersedia:Math.max(0,tersedia), jenisPenyimpanan:x.jenisPenyimpanan, tglExpired:x.tglExpired||''};
   });
 }
 
@@ -9790,6 +9804,7 @@ window.SgcT6.renderAvailable = function(){
   var tbody=document.getElementById('t6-avail-tbody');
   var emptyEl=document.getElementById('t6-avail-empty');
   if(!tbody) return;
+  if(typeof window.SgcT6.renderDeletionHistory==='function') window.SgcT6.renderDeletionHistory();
   var draftMap={};
   ((S6._wip&&S6._wip.items)||[]).forEach(function(it){
     var key=it.batchKode+'|'+it.skuCode;
@@ -9834,14 +9849,63 @@ window.SgcT6.renderAvailable = function(){
       '<td><div style="font-weight:600;color:var(--green);font-size:11px">'+(x.tglExpired?fmtDate(x.tglExpired):'—')+'</div><div style="font-size:9px;color:var(--text-muted);margin-top:2px">Otomatis dari Resep</div></td>'+
       '<td><input type="text" class="t6-inp-qc" placeholder="Nama staf QC" value="'+qcVal+'" style="width:130px;padding:5px 7px;border:.5px solid var(--border-strong);border-radius:5px;font-size:11px;font-family:inherit"></td>'+
       '<td>'+
-        '<div style="display:flex;gap:4px">'+
+        '<div style="display:flex;gap:4px;flex-wrap:wrap">'+
           '<button class="btn sm" onclick="SgcT6.simpanMeta(this)" title="Simpan Expired Otomatis &amp; Nama QC"><i class="ti ti-device-floppy"></i> Simpan</button>'+
           '<button class="btn sm success" onclick="SgcT6.bukaPopupKirim(this)" title="Kirim ke Gudang"><i class="ti ti-truck-delivery"></i></button>'+
+          (t6IsOwnerAccount()?'<button class="btn sm danger" onclick="SgcT6.hapusStokTersedia(this)" title="Hapus stok tersedia khusus Owner"><i class="ti ti-trash"></i> Hapus</button>':'')+
         '</div>'+
         statusBadge+
       '</td>'+
     '</tr>';
   }).join('');
+  window.SgcT6.renderDeletionHistory();
+};
+
+/* ── Penghapusan stok Langkah 1: khusus akun Owner, wajib verifikasi ulang
+   password akun Owner dan alasan. Penghapusan berupa pencatatan kuantitas
+   stok tersedia yang dikecualikan, bukan menghapus histori Tahap 5. ── */
+window.SgcT6.hapusStokTersedia=function(btn){
+  if(!t6IsOwnerAccount()){alert('Hanya akun Owner yang dapat menghapus stok tersedia.');return;}
+  var tr=btn&&btn.closest('tr'); if(!tr)return;
+  var batchKode=tr.dataset.batch||'', skuCode=tr.dataset.sku||'';
+  var namaProduk=tr.dataset.nama||'';
+  var tersedia=Math.max(0,parseFloat(tr.dataset.tersedia)||0);
+  if(tersedia<=0.0001){alert('Tidak ada stok tersedia yang dapat dihapus.');return;}
+  var owner= (window.SGC_ACCOUNTS||[]).find(function(a){return a.username==='owner'&&a.role==='owner';});
+  if(!owner){alert('Data akun Owner tidak ditemukan. Penghapusan dibatalkan.');return;}
+  var pass=prompt('Verifikasi keamanan: masukkan password akun Owner untuk menghapus stok '+namaProduk+' (Batch '+batchKode+').');
+  if(pass===null)return;
+  if(pass!==owner.password){alert('Password Owner salah. Produk tidak dihapus.');return;}
+  var alasan=prompt('Wajib isi alasan penghapusan stok '+namaProduk+' — Batch '+batchKode+'.');
+  if(alasan===null)return;
+  alasan=String(alasan).trim();
+  if(!alasan){alert('Alasan penghapusan wajib diisi. Produk tidak dihapus.');return;}
+  var konfirmasi=confirm('Konfirmasi penghapusan stok tersedia?\n\nProduk: '+namaProduk+'\nBatch: '+batchKode+'\nSKU: '+skuCode+'\nJumlah yang dihapus: '+tersedia.toLocaleString('id-ID')+' pcs\nAlasan: '+alasan+'\n\nCatatan ini akan masuk ke History Penghapusan.');
+  if(!konfirmasi)return;
+  var rec={id:'DEL-T6-'+Date.now(),waktu:t6NowLocal(),batchKode:batchKode,skuCode:skuCode,namaProduk:namaProduk,jumlah:tersedia,satuan:'pcs',alasan:alasan,dihapusOleh:(window._sgcCurrentAccount&&window._sgcCurrentAccount.nama)||'Owner',username:'owner'};
+  S6.stockDeletions.push(rec);
+  try{localStorage.setItem('sgc_t6_stock_deletions_v1',JSON.stringify(S6.stockDeletions));}catch(e){alert('Gagal menyimpan history penghapusan: '+e.message);S6.stockDeletions.pop();return;}
+  t6SyncItem('t6_stock_deletions',rec,'id');
+  window.SgcT6.renderAvailable();
+  window.SgcT6.renderDeletionHistory();
+  alert('Stok tersedia berhasil dihapus dari Langkah 1 dan tercatat di History. Histori pengemasan Tahap 5 tetap utuh.');
+};
+
+window.SgcT6.renderDeletionHistory=function(){
+  var page=document.getElementById('page-t6');if(!page)return;
+  var card=document.getElementById('t6-deletion-history-card');
+  if(!card){
+    card=document.createElement('div');card.id='t6-deletion-history-card';card.className='card';card.style.marginTop='10px';
+    card.innerHTML='<div class="card-head sgc-histori-head"><span style="font-weight:500;font-size:12px"><i class="ti ti-trash"></i> History Penghapusan Stok — Tahap 6</span></div><div class="card-body" style="padding:0"><div style="overflow-x:auto"><table style="width:100%;font-size:11px;border-collapse:collapse"><thead><tr><th>Waktu</th><th>Batch</th><th>SKU</th><th>Produk</th><th style="text-align:right">Jumlah</th><th>Alasan</th><th>Dihapus oleh</th></tr></thead><tbody id="t6-deletion-history-tbody"></tbody></table></div><div id="t6-deletion-history-empty" class="empty-state" style="display:none;padding:16px">Belum ada penghapusan stok.</div></div>';
+    page.appendChild(card);
+  }
+  var body=document.getElementById('t6-deletion-history-tbody');if(!body)return;
+  var rows=(S6.stockDeletions||[]).slice().reverse();
+  body.innerHTML=rows.map(function(r){
+    function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+    return '<tr><td>'+esc(t6TsLabel(r.waktu))+'</td><td><code>'+esc(r.batchKode)+'</code></td><td><code>'+esc(r.skuCode)+'</code></td><td>'+esc(r.namaProduk)+'</td><td style="text-align:right">'+(Number(r.jumlah)||0).toLocaleString('id-ID')+' '+esc(r.satuan||'pcs')+'</td><td>'+esc(r.alasan)+'</td><td>'+esc(r.dihapusOleh||'Owner')+'</td></tr>';
+  }).join('');
+  var empty=document.getElementById('t6-deletion-history-empty');if(empty)empty.style.display=rows.length?'none':'block';
 };
 
 /* ── Langkah 1, tombol "Simpan": rekam Tgl Expired & Nama QC untuk
